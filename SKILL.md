@@ -1,6 +1,6 @@
 ---
 name: 0xsimao-ai
-description: Accounting-first smart contract security audit in the style of 0xSimao — maps the protocol's money model, then attacks it with 12 parallel lenses derived from his 869 published findings. Trigger on "0xsimao ai", "0xsimao audit", "audit", "simao audit", "check this contract", "review for security". Modes - default (full repo) or a specific filename.
+description: Accounting-first smart contract security audit in the style of 0xSimao — maps the protocol's money model, then attacks it with 12 independent lenses scheduled through a configurable model-aware worker pool (default 3 active), derived from his 869 published findings. Trigger on "0xsimao ai", "0xsimao audit", "audit", "simao audit", "check this contract", "review for security". Modes - default (full repo) or a specific filename.
 ---
 
 # 0xSimao-Style Smart Contract Audit
@@ -17,9 +17,9 @@ This skill is model- and harness-agnostic. It needs three capabilities, named ge
 
 1. **A shell** — to list files, concatenate bundles, and create a temp directory.
 2. **File read/write** — to read source and write the money map and bundles.
-3. **Parallel subagents** — to run the 12 lenses independently. Called "subagent" below; your runtime may call it an agent, task, or worker.
+3. **Subagents** — to run the 12 lenses as independent workers through a rolling, bounded-concurrency pool (default: 3 active at once). Called "subagent" below; your runtime may call it an agent, task, or worker.
 
-Only the third is load-bearing for quality, and Turn 4 gives a sequential fallback for runtimes without it. Anything else mentioned (asking the user a structured question, background execution, per-subagent model selection) is optional: where a step depends on it, the step says so and tells you what to do instead.
+Only the third is load-bearing for quality, and Turn 4 gives a sequential fallback for runtimes without it. Anything else mentioned (background execution, per-subagent model selection) is optional: where a step depends on it, the step says so and tells you what to do instead.
 
 ## Mode Selection
 
@@ -31,6 +31,8 @@ Only the third is load-bearing for quality, and Turn 4 gives a sequential fallba
 **Flags:**
 
 - `--file-output` (off by default): also write the report to a markdown file (path per `{resolved_path}/report-formatting.md`). Never write a report file unless explicitly passed.
+- `--concurrency N` (default 3): maximum lenses active at once. Must be an integer with `1 <= N <= 12`. Invalid values (0, negative, non-integer, > 12) are a configuration error: stop before spawning any lens and report it — do not silently normalize.
+- `--config PATH`: explicit orchestration config JSON. Same schema as `references/orchestration-defaults.json`; takes precedence over the audited repo's `.0xsimao-ai.json`.
 
 ## Orchestration
 
@@ -43,11 +45,38 @@ d. shell `mktemp -d ./.audit-simao-XXXXXX` → store as `{bundle_dir}`
 
 If the repo has a README, protocol docs, or a `*.md` spec in scope, add them to the find results — the accounting model comes from docs plus code, and a documented invariant that the code violates is his highest-yield finding source.
 
-**Turn 1b — Model selection (optional).** Applies ONLY if your runtime can both (a) ask the user a structured multiple-choice question and (b) spawn subagents on an explicitly chosen model. If either is missing — which is the common case — SKIP this turn entirely, leave `{agent_model}` unset, and go to Turn 2. Do NOT emit the question as prose.
+**Turn 1b — Resolve orchestration configuration.** Non-interactive: defaults must make the audit runnable with no questions asked. Do not ask the user twelve model questions; do not require any prompt. Resolve, in this precedence order (highest first — merge in memory for this run only, never write overrides back to any file):
 
-1. Identify the model families your runtime can spawn subagents on, and which one you are.
-2. Ask which model the 12 lenses should use. Offer your own family first, marked `(Recommended)`, and take the newest version of whichever family is chosen.
-3. Store the choice as `{agent_model}`. No answer → default to your own family.
+1. invocation flags (`--concurrency N`)
+2. the `--config PATH` file, if given
+3. `.0xsimao-ai.json` in the audited repo root, if present
+4. your runtime's profile, if you can detect it (ZCode → the Deep/Fast profile under `{resolved_path}/../integrations/zcode/`)
+5. `{resolved_path}/orchestration-defaults.json`
+
+Steps:
+
+1. Read `{resolved_path}/orchestration-defaults.json`: `maxConcurrency`, `defaultModelClass`, `modelClasses` (each with a `model`, and optionally `preferredActive`/`maxActive`), and `lensAssignments` (each lens with `modelClass` and `priority`; a direct `model` field may override the class's model for that lens).
+2. Detect your runtime profile where possible. On ZCode, `deep` → `GLM-5.3`, `fast` → `GLM-5.3-Flash`, resolved to the runtime's actual model IDs at spawn time. On an undetectable runtime, use the generic defaults as-is.
+3. Apply the overrides in precedence order.
+4. Validate before spawning anything: `1 <= maxConcurrency <= 12`; for every model class with limits, `0 <= preferredActive <= maxActive <= maxConcurrency`; every lens 1–12 present exactly once. Any violation → stop and report the configuration error; do not silently normalize an impossible configuration.
+5. Resolve every lens to its bundle (Turn 3 table), model, model class, and priority. A lens with no assignment takes `defaultModelClass` (`fast` → GLM-5.3-Flash under the ZCode profile — never default an unspecified lens to the deep/expensive class).
+6. Print the concise resolved summary, adapted to the actual classes:
+
+   ```
+   Audit scheduler:
+   - max concurrency: 3
+   - GLM-5.3 preferred/max: 1/2
+   - GLM-5.3 lenses: 1, 2, 3, 4, 7, 12
+   - GLM-5.3-Flash lenses: 5, 6, 8, 9, 10, 11
+   ```
+
+   Print nothing else — no credentials, API keys, or unrelated runtime settings.
+
+Model fallback when a configured model is unavailable at spawn time, per lens: direct `model` override → the lens's model class model → the default model class model (`fast`) → the runtime's inherited/default model. If a fallback changes the model actually used, report it once for that lens (e.g. `Lens 4 requested GLM-5.3 but it is unavailable; falling back to GLM-5.3-Flash.`) — never spam the warning on every event.
+
+If your runtime supports fewer concurrent subagents than configured, use `effective_concurrency = min(configured, runtime_supported)`. If the limit cannot be determined in advance, obey the configured value and, if the runtime refuses a spawn, treat it as that worker's failure and continue with the retry rules below — never start uncontrolled extra workers.
+
+If your runtime cannot select a per-subagent model at all: keep the configured concurrency behavior, run every worker on the runtime's default/inherited model, print ONE concise notice that per-lens model routing was unavailable, and still run all 12 lenses. Never abort the audit over model routing.
 
 **Turn 2 — Build the money map (DO NOT SKIP).**
 
@@ -94,11 +123,37 @@ Every bundle = source + money-map + method + one lens + shared rules. Lenses rea
 
 Print line counts for every bundle and `source.md`. Do NOT inline source code into the subagent prompt itself — pass the bundle path and let the subagent read it.
 
-**Turn 4 — Spawn all 12 lenses.** In one message, spawn all 12 as **parallel subagents**, one per bundle. Run them in the background if your runtime supports it, and act on completion notifications — do NOT poll or sleep. If Turn 1b set `{agent_model}`, pass it on every call; if unset, omit it. Single phase, no later spawns.
+**Turn 4 — Run the lens pool (model-aware rolling scheduler).** The 12 lenses run as independent subagents through a rolling, bounded-concurrency pool — NOT as one fixed wave of 12. A finished worker immediately frees its slot and the next eligible lens starts; never wait for a batch of workers to finish together.
 
-The 12 lenses must stay **independent**: each sees only its own bundle and never another lens's output. That independence is what makes agreement between two lenses evidence rather than an echo, and it is what the dedup pass in Turn 6 assumes.
+Maintain scheduler state explicitly (a small table you update as events arrive):
 
-*Fallback — no subagents.* If your runtime cannot spawn subagents at all, run the lenses yourself in 12 separate sequential passes: read one bundle, emit that lens's findings block in full, then move to the next lens without carrying the previous lens's findings forward. Slower, and weaker because the passes are no longer blind to each other, but the method survives. **Never** collapse the 12 lenses into a single pass over the source — that discards the whole design.
+```
+pending:   all 12 lenses, each {lens, bundle, model, modelClass, priority, attempt}
+active:    []
+completed: []
+retry:     []
+```
+
+**Fill rules.** While `active` has fewer than `maxConcurrency` workers and an eligible lens is pending:
+
+1. A pending lens is *eligible* if spawning it would not exceed its model class's `maxActive` hard cap (classes without a cap are limited only globally).
+2. Model preference: while work remains in any other class, keep each capped class at or below its `preferredActive` — do not start a second worker of a capped class merely because it is next in line when eligible work exists elsewhere. Once pending work in the other classes is exhausted, workers of the capped class may fill slots up to their hard cap.
+3. Within the chosen class, take the highest-priority pending lens (ties → lower lens number).
+4. Never exceed global `maxConcurrency`. With the defaults (global 3, deep hard cap 2), all three slots are never deep — the expected deep-only tail is `deep, deep, <idle>`.
+
+Default initial spawn (priorities resolved in Turn 1b): lens 1 `deep` + lens 9 `fast` + lens 6 `fast` — normally `[GLM-5.3][Flash][Flash]`, not three of a kind.
+
+Spawn each worker with the prompt template below, passing that lens's resolved model if your runtime supports per-subagent model selection (on ZCode, use the `0xsimao-deep` / `0xsimao-fast` workers); if it does not, apply the Turn 1b no-routing fallback. Run workers in the background and act on completion notifications — do NOT poll or sleep.
+
+**Rolling completion.** Act on each completion notification the moment it arrives:
+
+- **Success** (usable findings/leads block): move the lens `active → completed`, then immediately re-run the fill rules to refill the freed slot.
+- **Failure, cancellation, or no usable output**: move it `active → retry` (same lens, same bundle, same configured model; if the failure is identified as model unavailability, apply the Turn 1b fallback chain and record the fallback). The slot frees immediately. Retries re-enter `pending` and obey BOTH the global cap and the model-class caps — a retry may not bypass a model cap.
+- **Two completions near-simultaneously**: fill both freed slots immediately.
+
+The 12 lenses must stay **independent**: each sees only its own bundle, the repo context, and its own prompt — never another lens's findings, summary, dedup state, or judge state. That holds for staggered starts too: a later-starting lens gets exactly what a first-wave lens gets. Independence is what makes agreement between two lenses evidence rather than an echo, and it is what the dedup pass in Turn 6 assumes.
+
+*Fallback — no subagents.* If your runtime cannot spawn subagents at all, run the lenses yourself in 12 separate sequential passes (concurrency is effectively 1; the pool rules are moot, model assignments even more so): read one bundle, emit that lens's findings block in full, then move to the next lens without carrying the previous lens's findings forward. Slower, and weaker because the passes are no longer blind to each other, but the method survives. **Never** collapse the 12 lenses into a single pass over the source — that discards the whole design.
 
 Prompt template (substitute real values):
 
@@ -140,7 +195,16 @@ missed is an audit failure).
 Output format: see shared-rules.md inside your bundle.
 ```
 
-**Turn 5 — Wait.** Proceed only after all 12 lenses have finished. Let them run to natural completion. If your runtime notifies you on completion, act on the notifications and do not poll or sleep. A lens that dies without output is a missing lens, not a quiet one — re-run that lens alone against its existing bundle rather than proceeding with 11.
+**Turn 5 — Drain barrier.** Turn 6 may begin only when ALL of these hold:
+
+```
+pending   = empty
+retry     = empty
+active    = empty
+completed = exactly lenses {1..12}
+```
+
+If any condition is false, do NOT start dedup — return to the Turn 4 scheduler: spawn what is retryable, keep refilling on completions, let workers run to natural completion, act on notifications rather than polling. A lens that dies without output is a missing lens, not a quiet one — re-run it against its existing bundle. Never proceed with 11/12 outputs.
 
 **Turn 6 — Deduplicate, judge & report.** Single pass. Do NOT print an intermediate dedup list — go straight to the report.
 

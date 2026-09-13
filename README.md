@@ -34,13 +34,18 @@ flowchart TD
   O --> AT["<b>Asymmetry table</b><br/>• value moves, no total is written<br/>• written in one branch, not the sibling<br/>• never tracked anywhere at all<br/>• an operation with no inverse<br/>• a function in a family that is missing"]
   MM --> H["Both handed to every lens, with the source"]
   AT --> H
-  H --> L["accounting-desync · share-exchange-rate · temporal-cohort · liquidation-solvency · cross-chain-state · rounding-precision<br/>ordering-mev · dos-griefing · access-trust · integration-assumptions · edge-states · flow-completeness"]
-  L --> D["Dedup, then four judge gates"]
+  H --> Q["<b>12 independent lenses</b><br/>accounting-desync · share-exchange-rate · temporal-cohort · liquidation-solvency · cross-chain-state · rounding-precision<br/>ordering-mev · dos-griefing · access-trust · integration-assumptions · edge-states · flow-completeness"]
+  Q --> SC["<b>Model-aware scheduler</b><br/>• global max concurrency: configurable, default 3<br/>• rolling: any completion → immediate refill<br/>• never a fixed wave"]
+  SC --> DP["<b>Deep pool</b> · GLM-5.3<br/>lenses 1, 12, 2, 4, 3, 7<br/>preferred 1 · hard max 2"]
+  SC --> FP["<b>Flash pool</b> · GLM-5.3-Flash<br/>lenses 9, 6, 11, 10, 8, 5<br/>fills the remaining slots"]
+  DP --> W["all 12 complete"]
+  FP --> W
+  W --> D["Dedup, then four judge gates"]
   D --> R["Severity, then the report"]
 ```
 
 1. Money map. The orchestrator reads the source and writes out assets, tracked totals, the asymmetry table, invariants, lifecycles and actor cohorts. Around 200 lines, injected into every lens.
-2. Twelve lenses in parallel. Each is a separate subagent with the full source, the money map, the method and its own specialty. No lens sees another lens's output, so two lenses landing on the same bug means something.
+2. Twelve independent lenses, scheduled through a configurable bounded-concurrency pool. The default is three active subagents; when one completes, the next eligible lens immediately takes its slot. Each lens is a separate subagent with the full source, the money map, the method and its own specialty. No lens sees another lens's output, so two lenses landing on the same bug means something.
 3. Dedup. Hard gates for function isolation, mechanism preservation, mitigation preservation and completeness.
 4. Judge. Four gates, then severity calibration.
 5. Report. `Description` and `Recommended Mitigation` per finding.
@@ -62,9 +67,28 @@ flowchart TD
 | 11 | edge-states | zero, one, first, last, expired, paused, capped |
 | 12 | flow-completeness | the gap hunter: missing calls, asymmetric branches, absent siblings |
 
+## Scheduling and model routing
+
+The 12 lenses never launch as one unrestricted wave. They run through a rolling, bounded-concurrency pool:
+
+- **Default concurrency is 3** active lenses; any completion immediately frees its slot and the next eligible lens starts. It is rolling, not fixed-wave batching.
+- Concurrency is configurable: `--concurrency N` (1–12), a `--config` file, or a `.0xsimao-ai.json` in the audited repo.
+- On runtimes that can pin a model per subagent, lenses are model-routed. The ZCode default profile:
+
+| Model | Lenses | Concurrency |
+|---|---|---|
+| GLM-5.3 | 1, 2, 3, 4, 7, 12 — the lenses that profit most from deeper multi-step reasoning | preferred 1, hard max 2 |
+| GLM-5.3-Flash | 5, 6, 8, 9, 10, 11 — the systematic / enumerative lenses | fills the other slots |
+
+- **Default model for an unspecified ZCode lens: GLM-5.3-Flash.** New or unassigned lenses never silently land on the expensive class.
+- Normal initial spawn is one GLM-5.3 + two GLM-5.3-Flash. While Flash work remains, the scheduler keeps a single GLM-5.3 active; once Flash work drains, up to two GLM-5.3 workers run — with the default cap of 3, never all three slots.
+- Runtimes without per-subagent model selection still run all 12 independent lenses at the configured concurrency, on the runtime's default model, with one concise notice.
+
+Defaults live in [`references/orchestration-defaults.json`](references/orchestration-defaults.json); the ZCode worker definitions and install notes live in [`integrations/zcode/`](integrations/zcode/). Config precedence: invocation flags → `--config` file → audited-repo `.0xsimao-ai.json` → runtime profile → defaults file.
+
 ## Install
 
-Works with any coding agent that can run a shell, read files and spawn parallel subagents. `SKILL.md` is plain markdown with no vendor tool names or APIs in it.
+Works with any coding agent that can run a shell, read files and spawn subagents. `SKILL.md` is plain markdown with no vendor tool names or APIs in it. Per-lens model routing additionally needs a runtime that can pin a model per subagent — see [`integrations/zcode/`](integrations/zcode/) for the ZCode adapter. Every other feature, including the bounded rolling scheduler, works on any runtime.
 
 Paste this into your agent, whichever one you use:
 
@@ -98,12 +122,24 @@ Everything above only saves you from retyping that line. Pasting the contents of
 ## Usage
 
 ```
-run 0xSimao AI                      # full repo
-run 0xSimao AI on Vault.sol         # specific files
-run 0xSimao AI --file-output        # also write the report to disk
+run 0xSimao AI                              # full repo, default concurrency 3
+run 0xSimao AI on Vault.sol                 # specific files
+run 0xSimao AI --file-output                # also write the report to disk
+run 0xSimao AI --concurrency 5              # five lenses active at once
+run 0xSimao AI --config .0xsimao-ai.json    # explicit orchestration config
+run 0xSimao AI Vault.sol --concurrency 2    # combine freely
 ```
 
-Runs twelve subagents in parallel over the in-scope source. Token spend is significant on a large codebase, so scope to specific files while iterating.
+The 12 lenses run through a bounded pool (default: 3 active subagents, rolling refill) over the in-scope source. Token spend is significant on a large codebase, so scope to specific files while iterating.
+
+Project-level overrides go in a `.0xsimao-ai.json` at the audited repo root — change concurrency, promote one lens to another model, or pin a single lens to a specific model id:
+
+```json
+{
+  "maxConcurrency": 4,
+  "lensAssignments": { "5": { "modelClass": "deep" } }
+}
+```
 
 Agents that cannot spawn subagents fall back to running the twelve lenses one after another in a single context. Slower, and the lenses lose their independence, but the method still holds.
 
@@ -113,8 +149,10 @@ Sherlock's [DODO Cross-Chain DEX](https://audits.sherlock.xyz/contests/991) cont
 
 | | Recall | Runtime | Tokens |
 |---|---|---|---|
-| 0xSimao AI | 15/17 (88.2%) | ~11 min | ~1.1M |
+| 0xSimao AI | 15/17 (88.2%) | ~11 min (historical benchmark using the original 12-way parallel scheduler) | ~1.1M |
 | pashov solidity-auditor v3 | 14/17 (82.4%) | 19–28 min | 3.3–4.8M |
+
+The `~11 min` figure was obtained under the old unrestricted 12-way parallel scheduler. The current scheduler defaults to max concurrency 3 and uses model-aware routing, so the historical runtime is not representative of the current wall-clock duration. Re-benchmark before publishing a replacement runtime.
 
 This is not a head-to-head. The second row is there for scale. The two tools were run by different people at different times, each scored by its own author, with no shared harness. The claim being made is only that the skill finds real issues in a real contest at a useful rate.
 
@@ -132,9 +170,15 @@ references/
   simao-method.md                     the 7-phase method, how to think
   severity-calibration.md             four gates + severity assignment
   report-formatting.md                the report format
+  orchestration-defaults.json         scheduler + model-routing defaults
   attack-lenses/
     shared-rules.md                   output format + reasoning protocol
     <12 lens files>
+integrations/
+  zcode/                              ZCode runtime adapter
+    README.md                         install notes + model routing
+    agents/0xsimao-deep.md            GLM-5.3 lens worker
+    agents/0xsimao-fast.md            GLM-5.3-Flash lens worker
 ```
 
 ## Notes

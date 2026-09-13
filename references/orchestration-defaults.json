@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "maxConcurrency": 3,
+  "defaultModelClass": "fast",
+  "modelClasses": {
+    "deep": {
+      "model": "GLM-5.3",
+      "preferredActive": 1,
+      "maxActive": 2
+    },
+    "fast": {
+      "model": "GLM-5.3-Flash"
+    }
+  },
+  "lensAssignments": {
+    "1":  { "modelClass": "deep", "priority": 100 },
+    "12": { "modelClass": "deep", "priority": 90 },
+    "2":  { "modelClass": "deep", "priority": 80 },
+    "4":  { "modelClass": "deep", "priority": 70 },
+    "3":  { "modelClass": "deep", "priority": 60 },
+    "7":  { "modelClass": "deep", "priority": 50 },
+
+    "9":  { "modelClass": "fast", "priority": 100 },
+    "6":  { "modelClass": "fast", "priority": 90 },
+    "11": { "modelClass": "fast", "priority": 80 },
+    "10": { "modelClass": "fast", "priority": 70 },
+    "8":  { "modelClass": "fast", "priority": 60 },
+    "5":  { "modelClass": "fast", "priority": 50 }
+  }
+}
