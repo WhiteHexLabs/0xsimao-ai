@@ -35,7 +35,10 @@ flowchart TD
   MM --> H["Both handed to every lens, with the source"]
   AT --> H
   H --> Q["<b>12 independent lenses</b><br/>accounting-desync · share-exchange-rate · temporal-cohort · liquidation-solvency · cross-chain-state · rounding-precision<br/>ordering-mev · dos-griefing · access-trust · integration-assumptions · edge-states · flow-completeness"]
-  Q --> SC["<b>Model-aware scheduler</b><br/>• global max concurrency: configurable, default 3<br/>• rolling: any completion → immediate refill<br/>• never a fixed wave"]
+  Q --> CC["<b>Configured concurrency</b><br/>flags > --config > runtime profile > defaults"]
+  CC --> RT["Runtime capability"]
+  RT --> EC["<b>Effective concurrency</b>"]
+  EC --> SC["<b>Model-aware scheduler</b><br/>• rolling when per-worker completion events exist<br/>• bounded-batch otherwise<br/>• never a fixed wave"]
   SC --> DP["<b>Deep pool</b> · GLM-5.3<br/>lenses 1, 12, 2, 4, 3, 7<br/>preferred 1 · hard max 2"]
   SC --> FP["<b>Flash pool</b> · GLM-5.3-Flash<br/>lenses 9, 6, 11, 10, 8, 5<br/>fills the remaining slots"]
   DP --> W["all 12 complete"]
@@ -69,11 +72,11 @@ flowchart TD
 
 ## Scheduling and model routing
 
-The 12 lenses never launch as one unrestricted wave. They run through a rolling, bounded-concurrency pool:
+The 12 lenses never launch as one unrestricted wave. They run through a bounded-concurrency pool:
 
-- **Default concurrency is 3** active lenses; any completion immediately frees its slot and the next eligible lens starts. It is rolling, not fixed-wave batching.
-- Concurrency is configurable: `--concurrency N` (1–12), a `--config` file, or a `.0xsimao-ai.json` in the audited repo.
-- On runtimes that can pin a model per subagent, lenses are model-routed. The ZCode default profile:
+- **Default requested concurrency is 3**, clamped by runtime capability to an **effective concurrency** (printed as `requested/effective` when they differ). Any integer `1..12` is a valid concurrency; class limits are clamped to the effective value, so `--concurrency 1` works. With per-worker completion events the pool is rolling — any completion immediately frees its slot and the next eligible lens starts. Without them the scheduler reports **bounded-batch** mode and still never exceeds the effective concurrency. It is never fixed-wave batching.
+- Concurrency is configurable: `--concurrency N` (1–12) or a `--config` file. A `.0xsimao-ai.json` in the audited repo is applied only by explicit opt-in (`--config .0xsimao-ai.json`) — audit-target configuration is untrusted.
+- On runtimes that can pin a model per subagent, lenses are model-routed, and caps are enforced against the **resolved** model — a lens pinned directly to `GLM-5.3` counts against the Deep cap even if its class says `fast`. The ZCode default profile:
 
 | Model | Lenses | Concurrency |
 |---|---|---|
@@ -82,9 +85,10 @@ The 12 lenses never launch as one unrestricted wave. They run through a rolling,
 
 - **Default model for an unspecified ZCode lens: GLM-5.3-Flash.** New or unassigned lenses never silently land on the expensive class.
 - Normal initial spawn is one GLM-5.3 + two GLM-5.3-Flash. While Flash work remains, the scheduler keeps a single GLM-5.3 active; once Flash work drains, up to two GLM-5.3 workers run — with the default cap of 3, never all three slots.
+- Execution failures are bounded to two attempts per lens (initial run + one retry); a spawn the runtime refuses never consumes an attempt. If a lens ends FAILED, the audit stops instead of reporting 11/12.
 - Runtimes without per-subagent model selection still run all 12 independent lenses at the configured concurrency, on the runtime's default model, with one concise notice.
 
-Defaults live in [`references/orchestration-defaults.json`](references/orchestration-defaults.json); the ZCode worker definitions and install notes live in [`integrations/zcode/`](integrations/zcode/). Config precedence: invocation flags → `--config` file → audited-repo `.0xsimao-ai.json` → runtime profile → defaults file.
+Defaults live in [`references/orchestration-defaults.json`](references/orchestration-defaults.json), strictly validated against [`references/orchestration.schema.json`](references/orchestration.schema.json) (unknown keys fail before any lens spawns). The ZCode worker definitions and install notes live in [`integrations/zcode/`](integrations/zcode/). Config precedence, lowest → highest: defaults file → runtime profile → `--config` file → invocation flags; a repo-local `.0xsimao-ai.json` is never implicit.
 
 ## Install
 
@@ -125,14 +129,17 @@ Everything above only saves you from retyping that line. Pasting the contents of
 run 0xSimao AI                              # full repo, default concurrency 3
 run 0xSimao AI on Vault.sol                 # specific files
 run 0xSimao AI --file-output                # also write the report to disk
+run 0xSimao AI --concurrency 1              # one lens at a time (valid)
+run 0xSimao AI --concurrency 3              # default: three lenses active
 run 0xSimao AI --concurrency 5              # five lenses active at once
-run 0xSimao AI --config .0xsimao-ai.json    # explicit orchestration config
+run 0xSimao AI --config /trusted/path/audit-config.json   # explicit config
+run 0xSimao AI --config .0xsimao-ai.json    # explicit opt-in to the repo-local config
 run 0xSimao AI Vault.sol --concurrency 2    # combine freely
 ```
 
-The 12 lenses run through a bounded pool (default: 3 active subagents, rolling refill) over the in-scope source. Token spend is significant on a large codebase, so scope to specific files while iterating.
+The 12 lenses run through a bounded pool (default: 3 active subagents, rolling refill when the runtime supports it) over the in-scope source. Token spend is significant on a large codebase, so scope to specific files while iterating.
 
-Project-level overrides go in a `.0xsimao-ai.json` at the audited repo root — change concurrency, promote one lens to another model, or pin a single lens to a specific model id:
+Repo-local overrides can live in a `.0xsimao-ai.json` at the audited repo root — but the audit target is untrusted, so the file is never loaded automatically. Apply it only when you trust it, by passing it explicitly:
 
 ```json
 {
@@ -140,6 +147,8 @@ Project-level overrides go in a `.0xsimao-ai.json` at the audited repo root — 
   "lensAssignments": { "5": { "modelClass": "deep" } }
 }
 ```
+
+Configuration is deep-merged over the defaults (a partial lens override keeps the default `priority` and the other 11 lenses), unknown keys fail before any lens spawns, and class limits are clamped to the effective concurrency.
 
 Agents that cannot spawn subagents fall back to running the twelve lenses one after another in a single context. Slower, and the lenses lose their independence, but the method still holds.
 
@@ -171,14 +180,19 @@ references/
   severity-calibration.md             four gates + severity assignment
   report-formatting.md                the report format
   orchestration-defaults.json         scheduler + model-routing defaults
+  orchestration.schema.json           strict config schema (typos fail)
   attack-lenses/
-    shared-rules.md                   output format + reasoning protocol
+    shared-rules.md                   output format + trust boundary
     <12 lens files>
 integrations/
   zcode/                              ZCode runtime adapter
     README.md                         install notes + model routing
-    agents/0xsimao-deep.md            GLM-5.3 lens worker
-    agents/0xsimao-fast.md            GLM-5.3-Flash lens worker
+    agents/0xsimao-deep.md            GLM-5.3 lens worker (read-only)
+    agents/0xsimao-fast.md            GLM-5.3-Flash lens worker (read-only)
+scripts/
+  validate-orchestration.py           config validator + scheduler simulator
+.github/workflows/
+  validate-orchestration.yml          CI: runs the validator
 ```
 
 ## Notes

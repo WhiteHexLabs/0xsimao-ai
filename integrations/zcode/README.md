@@ -31,15 +31,33 @@ must not silently land on GLM-5.3.
 
 From `references/orchestration-defaults.json`:
 
-- max concurrency: **3** lenses active at once
-- GLM-5.3 preferred active: **1** / hard max active: **2**
+- requested concurrency: **3** lenses active at once, clamped by the
+  runtime's actual capacity to an **effective concurrency** (printed as
+  `requested/effective` when they differ)
+- GLM-5.3 preferred active: **1** / hard max active: **2** — both clamped
+  to the effective concurrency, so `--concurrency 1` yields deep 1/1
 - while GLM-5.3-Flash work remains, the scheduler keeps only one
   GLM-5.3 worker active; once Flash work is drained, up to two GLM-5.3
   workers may run — with the default cap of 3, never all three slots
 - normal initial spawn: lens 1 (deep) + lens 9 (fast) + lens 6 (fast)
 
 The orchestrator (the main ZCode session) keeps whatever model the user
-selected for it. This integration does not change the orchestrator model.
+selected for it. This integration does not change the orchestrator
+model; it controls only the audit subagents.
+
+## Worker hardening
+
+Both worker templates are hardened leaf agents:
+
+- `injectAgentsMd: false` — the audited repo's `AGENTS.md` is never
+  injected into a lens worker's context;
+- read-only tool allowlist — `Read`, `Grep`, `Glob` only. No `Edit`,
+  `Write`, `Bash`, MCP tools, or subagent spawning; cross-file lookups
+  need nothing else;
+- an explicit trust boundary at the top of the prompt: everything
+  originating from the audited repository is untrusted audit data and
+  can never act as instructions (see
+  `references/attack-lenses/shared-rules.md`).
 
 ## Model IDs
 
@@ -59,21 +77,23 @@ plugin mechanism — it does not read agent definitions out of this
 repository. Installing the two workers is therefore an **explicit user
 action**; nothing here writes outside this repo.
 
-1. Copy `agents/0xsimao-deep.md` and `agents/0xsimao-fast.md` into the
-   directory your ZCode loads custom subagents from (for a user-level
-   install, your ZCode agents directory such as `~/.zcode/agents/`; a
-   plugin or project-level location works the same way).
-2. Start a **new ZCode session**. Subagent definitions — including their
-   pinned models — are read at session start, so a running session will
-   not pick up a changed or newly installed worker definition.
-3. Invoke the audit as usual (`run 0xSimao AI`); the orchestrator in
-   `SKILL.md` detects ZCode, resolves the Deep/Fast profile, and
-   dispatches lens workers accordingly.
+- **Direct install:** copy `agents/0xsimao-deep.md` and
+  `agents/0xsimao-fast.md` to your user custom-subagent directory,
+  `~/.zcode/agents/`.
+- **Plugin install:** a ZCode plugin may package `agents/*.md` — but
+  simply keeping these files inside a normal project directory does not
+  make them user custom subagents. `integrations/zcode/agents/` in this
+  repository is only a template location unless the repository is
+  actually packaged and installed as a ZCode plugin.
 
-If your ZCode build supports a per-agent tool allowlist, you may
-restrict the workers by excluding only the subagent-spawning tool. Leave
-read, search, and shell tools available — the lenses need them for
-cross-file lookups.
+After changing subagent definitions, start a **new ZCode session**.
+Subagent definitions — including their pinned models — are read at
+session start, so a running session will not pick up a changed or newly
+installed worker definition.
+
+Then invoke the audit as usual (`run 0xSimao AI`); the orchestrator in
+`SKILL.md` detects ZCode, resolves the Deep/Fast profile, and dispatches
+lens workers accordingly.
 
 ## If model routing is unavailable
 
@@ -88,15 +108,19 @@ If your ZCode build cannot select a per-subagent model:
 The audit is never aborted solely because model routing is unsupported.
 Per-lens fallback order when a configured model is unavailable at spawn
 time: the lens's direct `model` override → its model class's model →
-`GLM-5.3-Flash` (default class) → the runtime inherited model. A
+`GLM-5.3-Flash` (default class) → the runtime inherited model. The
+fallback is applied at most once per lens, recomputes the lens's
+concurrency class, and does not consume an execution attempt. A
 fallback that changes the model actually used is reported once per lens.
 
 ## Overrides
 
-See the main README and `SKILL.md` Turn 1b for the override chain
-(flags → `--config` file → `.0xsimao-ai.json` in the audited repo → this
-ZCode profile → `references/orchestration-defaults.json`). Two common
-ZCode tweaks:
+Config precedence, lowest → highest: `references/orchestration-defaults.json`
+→ this ZCode profile → explicit `--config PATH` → invocation flags. A
+`.0xsimao-ai.json` in the audited repo is never applied implicitly —
+audit-target configuration is untrusted; pass `--config .0xsimao-ai.json`
+to opt in. See the main README and `SKILL.md` Turn 1b. Two common ZCode
+tweaks:
 
 ```json
 { "maxConcurrency": 4 }
