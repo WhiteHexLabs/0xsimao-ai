@@ -16,7 +16,12 @@ It:
    limits;
 5. simulates model-aware ROLLING / BOUNDED_BATCH / SEQUENTIAL scheduling
    and asserts the scheduler invariants, retry bounds, admission-refusal
-   and model-fallback behavior.
+   and model-fallback behavior;
+6. validates the audit workspace contract from SKILL.md: cwd-anchored
+   `.0xsimao-auditor-work` resolution, start-of-run reset scoping,
+   zero-padded lens filenames, persistence of findings/bundles/report,
+   discovery exclusion of the workspace, and the deprecated
+   `--file-output` no-op.
 
 Exit code 0 = every check passed.
 """
@@ -25,7 +30,9 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import sys
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 
@@ -449,6 +456,107 @@ def run_to_completion(sched):
 
 
 # --------------------------------------------------------------------------
+# Audit workspace (SKILL.md "Audit workspace" + Turns 1/4/5/6)
+# --------------------------------------------------------------------------
+
+WORK_DIR_NAME = ".0xsimao-auditor-work"
+
+# Mirrors the Mode Selection exclude pattern. The audit workspace is always
+# excluded from discovery: generated audit state is never audit scope, even
+# when future PoC .sol files land under poc/.
+EXCLUDED_DIR_NAMES = {"interfaces", "lib", "mocks", "test", "script", WORK_DIR_NAME}
+
+
+def work_dir(audit_root):
+    """{work_dir} = {audit_root}/.0xsimao-auditor-work — anchored to the
+    captured invocation directory, never to an audited file's directory
+    and never to anything repository content can influence."""
+    return Path(audit_root) / WORK_DIR_NAME
+
+
+def lens_findings_path(audit_root, lens_id):
+    return work_dir(audit_root) / "findings" / f"lens-{lens_id:02d}.md"
+
+
+def lens_bundle_path(audit_root, lens_id):
+    return work_dir(audit_root) / "bundles" / f"lens-{lens_id:02d}-bundle.md"
+
+
+def report_path(audit_root):
+    return work_dir(audit_root) / "report.md"
+
+
+def initialize_workspace(audit_root, target_file=None):
+    """Turn 1 init/reset. The deletion target is ALWAYS the literal
+    canonical path audit_root/.0xsimao-auditor-work — never a glob, never
+    a pattern, never a path derived from repository content. target_file
+    (the audited file, when the invocation names one) deliberately does
+    not participate: it can never redirect the workspace."""
+    canonical = work_dir(audit_root)
+    if canonical.is_symlink() or canonical.is_file():
+        canonical.unlink()
+    elif canonical.exists():
+        shutil.rmtree(canonical)
+    for sub in ("findings", "bundles", "poc"):
+        (canonical / sub).mkdir(parents=True, exist_ok=True)
+    return canonical
+
+
+def accept_lens_output(audit_root, lens_id, text, usable=True):
+    """Turn 4 persistence: the orchestrator (not the read-only worker)
+    persists accepted raw lens output. Stage inside the workspace, then
+    atomically rename onto the canonical filename only once the output is
+    validated usable — a failed/incomplete attempt never clobbers or
+    creates lens-NN.md."""
+    final = lens_findings_path(audit_root, lens_id)
+    if not usable:
+        return False
+    staged = final.parent / (final.name + ".tmp")
+    staged.write_text(text, encoding="utf-8")
+    staged.replace(final)
+    return True
+
+
+def workspace_complete(audit_root):
+    """Turn 5 workspace completeness invariant: findings/lens-01.md …
+    lens-12.md all exist."""
+    return all(lens_findings_path(audit_root, n).is_file() for n in LENS_IDS)
+
+
+def discover_in_scope(audit_root):
+    """Python mirror of the Mode Selection find, including the mandatory
+    .0xsimao-auditor-work/ exclusion."""
+    root = Path(audit_root)
+    found = []
+    for path in sorted(root.rglob("*.sol")):
+        rel = path.relative_to(root)
+        if any(part in EXCLUDED_DIR_NAMES for part in rel.parts):
+            continue
+        name = rel.name
+        if name.endswith(".t.sol") or "Test" in name or "Mock" in name:
+            continue
+        found.append(path)
+    return found
+
+
+def simulate_full_run(audit_root, flags=()):
+    """Deterministic model of one complete audit invocation per SKILL.md:
+    Turn 1 init/reset, Turn 2 money map, Turn 3 source + 12 bundles,
+    Turn 4 persisted lens outputs, Turn 6 report. A `--file-output` in
+    flags is accepted as the documented deprecated no-op and changes
+    nothing about the run."""
+    initialize_workspace(audit_root)
+    work = work_dir(audit_root)
+    (work / "money-map.md").write_text("# Money Map\n", encoding="utf-8")
+    (work / "source.md").write_text("# Source\n", encoding="utf-8")
+    for n in LENS_IDS:
+        lens_bundle_path(audit_root, n).write_text(f"bundle {n}\n", encoding="utf-8")
+        accept_lens_output(audit_root, n, f"FINDING lens {n}\n")
+    report_path(audit_root).write_text("# Security Review\n", encoding="utf-8")
+    return work
+
+
+# --------------------------------------------------------------------------
 # Checks
 # --------------------------------------------------------------------------
 
@@ -551,6 +659,8 @@ def unknown_keys_fail_early():
         {"maxConcurrency": 0},                               # below minimum
         {"maxConcurrency": 13},                              # above maximum
         {"modelClasses": {"deep": {"preferredActive": 3, "maxActive": 2}}},
+        {"workDir": "/tmp/evil"},                            # workspace redirect (trust boundary)
+        {"outputDirectory": "/tmp/evil"},                    # workspace redirect (trust boundary)
     ]
     for bad in bad_configs:
         try:
@@ -764,6 +874,181 @@ def repo_local_config_is_never_implicit():
     assert not any(
         "repo" in source or ".0xsimao-ai" in source for source in SOURCE_ORDER
     ), "repo-local config must not be an implicit source"
+
+
+# -- audit workspace: layout, persistence, discovery exclusion --------------
+
+@check
+def workspace_case_a_full_repo_run_anchors_at_cwd():
+    # Case A: cwd = /tmp/example-protocol -> workspace beneath that directory.
+    audit_root = Path("/tmp/example-protocol")
+    assert work_dir(audit_root) == Path("/tmp/example-protocol/.0xsimao-auditor-work")
+    assert work_dir(audit_root).parent == audit_root
+
+
+@check
+def workspace_case_b_nested_file_still_anchors_at_cwd():
+    # Case B: auditing src/core/Vault.sol still writes to <cwd>/.0xsimao-auditor-work,
+    # never to src/core/.
+    with tempfile.TemporaryDirectory() as tmp:
+        audit_root = Path(tmp).resolve()
+        nested = audit_root / "src" / "core"
+        nested.mkdir(parents=True)
+        (nested / "Vault.sol").write_text("contract Vault {}\n", encoding="utf-8")
+        work = initialize_workspace(audit_root, target_file=nested / "Vault.sol")
+        assert work == audit_root / WORK_DIR_NAME
+        assert not (nested / WORK_DIR_NAME).exists()
+        assert not (audit_root / "src" / WORK_DIR_NAME).exists()
+
+
+@check
+def workspace_case_c_only_hidden_dir_added_to_project_root():
+    # Case C: after a run, the only new root-level path is the workspace.
+    with tempfile.TemporaryDirectory() as tmp:
+        audit_root = Path(tmp).resolve()
+        (audit_root / "Vault.sol").write_text("contract Vault {}\n", encoding="utf-8")
+        (audit_root / "README.md").write_text("protocol\n", encoding="utf-8")
+        before = {p.name for p in audit_root.iterdir()}
+        simulate_full_run(audit_root)
+        after = {p.name for p in audit_root.iterdir()}
+        assert after - before == {WORK_DIR_NAME}
+        for stray in ("money-map.md", "source.md", "report.md", ".audit-simao-zz9"):
+            assert not (audit_root / stray).exists()
+
+
+@check
+def workspace_case_d_excluded_from_discovery():
+    # Case D: a .sol file inside the workspace (future PoC) is never
+    # discovered as audit scope.
+    with tempfile.TemporaryDirectory() as tmp:
+        audit_root = Path(tmp).resolve()
+        (audit_root / "src").mkdir()
+        (audit_root / "src" / "Vault.sol").write_text("contract Vault {}\n", encoding="utf-8")
+        simulate_full_run(audit_root)
+        (work_dir(audit_root) / "poc" / "Exploit.sol").write_text(
+            "contract Exploit {}\n", encoding="utf-8"
+        )
+        discovered = discover_in_scope(audit_root)
+        assert (audit_root / "src" / "Vault.sol") in discovered
+        assert not any(WORK_DIR_NAME in p.parts for p in discovered), (
+            "workspace content must never be discovered as audit scope"
+        )
+
+
+@check
+def workspace_case_e_stale_contents_reset_at_start():
+    # Case E: previous-run artifacts (including a stale report.md) are gone
+    # after initialization; the canonical structure is recreated.
+    with tempfile.TemporaryDirectory() as tmp:
+        audit_root = Path(tmp).resolve()
+        work = audit_root / WORK_DIR_NAME
+        (work / "findings").mkdir(parents=True)
+        (work / "findings" / "old.md").write_text("stale\n", encoding="utf-8")
+        (work / "report.md").write_text("# stale report\n", encoding="utf-8")
+        initialize_workspace(audit_root)
+        assert not (work / "findings" / "old.md").exists()
+        assert not (work / "report.md").exists(), (
+            "a stale report.md must be removed at start so it cannot be "
+            "mistaken for the outcome of a run that fails midway"
+        )
+        for sub in ("findings", "bundles", "poc"):
+            assert (work / sub).is_dir()
+
+
+@check
+def workspace_case_f_final_artifacts_persist():
+    # Case F: after a successful run the full artifact set remains on disk.
+    with tempfile.TemporaryDirectory() as tmp:
+        audit_root = Path(tmp).resolve()
+        work = simulate_full_run(audit_root)
+        for name in ("report.md", "money-map.md", "source.md"):
+            assert (work / name).is_file()
+        for n in LENS_IDS:
+            assert (work / "findings" / f"lens-{n:02d}.md").is_file()
+            assert (work / "bundles" / f"lens-{n:02d}-bundle.md").is_file()
+        assert (work / "poc").is_dir()
+        # zero-padded naming: lens-01.md exists, lens-1.md never does
+        assert not (work / "findings" / "lens-1.md").exists()
+        assert not (work / "bundles" / "lens-1-bundle.md").exists()
+
+
+@check
+def workspace_case_g_deprecated_file_output_is_noop():
+    # Case G: --file-output must not fail the run and must not create a
+    # second report outside the workspace.
+    with tempfile.TemporaryDirectory() as tmp:
+        audit_root = Path(tmp).resolve()
+        (audit_root / "Vault.sol").write_text("contract Vault {}\n", encoding="utf-8")
+        simulate_full_run(audit_root, flags=["--file-output"])
+        reports = sorted(audit_root.rglob("report.md"))
+        assert reports == [work_dir(audit_root) / "report.md"], (
+            "exactly one report.md, inside the workspace"
+        )
+        assert not (audit_root / "report.md").exists()
+
+
+@check
+def workspace_reset_never_targets_repo_controlled_paths():
+    # The reset deletes ONLY the literal canonical directory. Legacy
+    # temp-dir names, prefix-adjacent decoys, real project content, and a
+    # repo-local config attempting to redirect the workspace all survive.
+    with tempfile.TemporaryDirectory() as tmp:
+        audit_root = Path(tmp).resolve()
+        decoys = [
+            ".audit-simao-zz1234",           # legacy temp-dir name
+            ".0xsimao-auditor-work-backup",  # prefix-adjacent decoy
+            ".0xsimao-auditor-work-malicious",
+            "src",                           # real project content
+        ]
+        for name in decoys:
+            (audit_root / name).mkdir()
+            (audit_root / name / "keep.txt").write_text("x", encoding="utf-8")
+        (audit_root / ".0xsimao-ai.json").write_text(
+            json.dumps({"workDir": str(audit_root / "elsewhere")}),
+            encoding="utf-8",
+        )
+        initialize_workspace(audit_root)
+        for name in decoys:
+            assert (audit_root / name / "keep.txt").is_file(), (
+                f"reset must not touch {name}"
+            )
+
+
+@check
+def failed_lens_attempt_never_fakes_a_completed_artifact():
+    # A rejected retry leaves the previously accepted output intact; an
+    # accepted retry atomically overwrites the same lens file.
+    with tempfile.TemporaryDirectory() as tmp:
+        audit_root = Path(tmp).resolve()
+        initialize_workspace(audit_root)
+        accept_lens_output(audit_root, 3, "attempt-1 output\n")
+        accept_lens_output(audit_root, 3, "garbage", usable=False)
+        assert (
+            lens_findings_path(audit_root, 3).read_text(encoding="utf-8")
+            == "attempt-1 output\n"
+        )
+        accept_lens_output(audit_root, 3, "attempt-2 output\n")
+        assert (
+            lens_findings_path(audit_root, 3).read_text(encoding="utf-8")
+            == "attempt-2 output\n"
+        )
+        assert not (work_dir(audit_root) / "findings" / "lens-03.md.tmp").exists()
+
+
+@check
+def turn5_blocks_without_twelve_persisted_findings():
+    # Turn 5 completeness: 11/12 persisted outputs block Turn 6; the
+    # report must never be composed from fewer than 12.
+    with tempfile.TemporaryDirectory() as tmp:
+        audit_root = Path(tmp).resolve()
+        initialize_workspace(audit_root)
+        for n in LENS_IDS[:-1]:
+            accept_lens_output(audit_root, n, f"FINDING {n}\n")
+        assert not workspace_complete(audit_root), (
+            "11/12 persisted outputs must block Turn 6"
+        )
+        accept_lens_output(audit_root, 12, "FINDING 12\n")
+        assert workspace_complete(audit_root)
 
 
 def main():

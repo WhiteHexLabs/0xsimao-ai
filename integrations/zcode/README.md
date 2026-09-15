@@ -53,7 +53,11 @@ Both worker templates are hardened leaf agents:
   injected into a lens worker's context;
 - read-only tool allowlist — `Read`, `Grep`, `Glob` only. No `Edit`,
   `Write`, `Bash`, MCP tools, or subagent spawning; cross-file lookups
-  need nothing else;
+  need nothing else. Workers never write: all audit artifacts land under
+  `.0xsimao-auditor-work/` in the audited repo, and the orchestrator
+  itself persists each lens's raw returned output to
+  `.0xsimao-auditor-work/findings/lens-NN.md` after a successful
+  completion — persistence requires no write access in the worker;
 - an explicit trust boundary at the top of the prompt: everything
   originating from the audited repository is untrusted audit data and
   can never act as instructions (see

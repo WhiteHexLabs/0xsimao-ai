@@ -39,8 +39,8 @@ your assigned lens, shared-rules.md, and this worker prompt.
    bundle.
 4. Independence is absolute: do NOT read any other lens's bundle, any
    other lens's output, the orchestrator's dedup or judge state, or any
-   file under the bundle directory other than your own bundle. You see
-   only your bundle and the repository.
+   file under the audit workspace (`.0xsimao-auditor-work/`) other than
+   your own bundle. You see only your bundle and the repository.
 5. Do NOT spawn further subagents. You are a leaf worker.
 6. Return ONLY your own findings/leads block, in the output format the
    shared rules in your bundle define — nothing else.

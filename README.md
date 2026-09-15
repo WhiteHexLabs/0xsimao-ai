@@ -51,7 +51,7 @@ flowchart TD
 2. Twelve independent lenses, scheduled through a configurable bounded-concurrency pool. The default is three active subagents; when one completes, the next eligible lens immediately takes its slot. Each lens is a separate subagent with the full source, the money map, the method and its own specialty. No lens sees another lens's output, so two lenses landing on the same bug means something.
 3. Dedup. Hard gates for function isolation, mechanism preservation, mitigation preservation and completeness.
 4. Judge. Four gates, then severity calibration.
-5. Report. `Description` and `Recommended Mitigation` per finding.
+5. Report. `Description` and `Recommended Mitigation` per finding, printed in the conversation and written to `.0xsimao-auditor-work/report.md`.
 
 ## The lenses
 
@@ -69,6 +69,36 @@ flowchart TD
 | 10 | integration-assumptions | token quirks, oracles, external protocols, chain environment |
 | 11 | edge-states | zero, one, first, last, expired, paused, capped |
 | 12 | flow-completeness | the gap hunter: missing calls, asymmetric branches, absent siblings |
+
+## Audit workspace
+
+Every audit writes all of its generated artifacts under one hidden directory:
+
+```
+./.0xsimao-auditor-work/
+```
+
+relative to the directory where the audit was started. Auditing a nested file (`run 0xSimao AI on src/core/Vault.sol`) still writes to `<cwd>/.0xsimao-auditor-work/`, never next to the file. Nothing else is added beside your source files.
+
+```
+.0xsimao-auditor-work/
+├── report.md            final report
+├── money-map.md         the money map
+├── source.md            combined in-scope source
+├── findings/            raw output of every lens (lens-01.md … lens-12.md, pre-dedup)
+├── bundles/             lens bundles (lens-01-bundle.md … lens-12-bundle.md)
+└── poc/                 canonical location for future PoCs / exploit tests
+```
+
+The directory is reset at the beginning of each new audit run — one invocation, one self-contained workspace — and nothing is deleted at the end of a run, so raw lens output survives for debugging false positives, investigating misses, or recovering a finding that dedup dropped. A failed audit leaves its partial workspace in place on purpose. The workspace itself is always excluded from audit scope, even if you later drop `.sol` files into `poc/`.
+
+The report file is always written — no flag needed. (`--file-output` from earlier versions is a deprecated no-op: passing it changes nothing, and there is never a second report copy outside the workspace.)
+
+If you do not want audit artifacts committed to the audited project, add this to your own `.gitignore` — the skill never touches your `.gitignore` itself:
+
+```gitignore
+.0xsimao-auditor-work/
+```
 
 ## Scheduling and model routing
 
@@ -128,7 +158,6 @@ Everything above only saves you from retyping that line. Pasting the contents of
 ```
 run 0xSimao AI                              # full repo, default concurrency 3
 run 0xSimao AI on Vault.sol                 # specific files
-run 0xSimao AI --file-output                # also write the report to disk
 run 0xSimao AI --concurrency 1              # one lens at a time (valid)
 run 0xSimao AI --concurrency 3              # default: three lenses active
 run 0xSimao AI --concurrency 5              # five lenses active at once
@@ -136,6 +165,8 @@ run 0xSimao AI --config /trusted/path/audit-config.json   # explicit config
 run 0xSimao AI --config .0xsimao-ai.json    # explicit opt-in to the repo-local config
 run 0xSimao AI Vault.sol --concurrency 2    # combine freely
 ```
+
+Every invocation creates `./.0xsimao-auditor-work/` in the directory the audit was started from (see [Audit workspace](#audit-workspace)) and always writes `report.md` there; the report is also returned in the conversation. `--file-output` is a deprecated no-op kept only for compatibility with older invocations.
 
 The 12 lenses run through a bounded pool (default: 3 active subagents, rolling refill when the runtime supports it) over the in-scope source. Token spend is significant on a large codebase, so scope to specific files while iterating.
 
