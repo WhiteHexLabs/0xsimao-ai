@@ -1,6 +1,6 @@
 ---
 name: 0xsimao-ai
-description: Accounting-first smart contract security audit in the style of 0xSimao — maps the protocol's money model, then attacks it with 12 independent lenses scheduled through a configurable model-aware worker pool (default 3 active), derived from his 869 published findings. Trigger on "0xsimao ai", "0xsimao audit", "audit", "simao audit", "check this contract", "review for security". Modes - default (full repo) or a specific filename.
+description: Accounting-first smart contract security audit in the style of 0xSimao — maps the protocol's money model, then attacks it with 12 independent lenses scheduled through a configurable model-aware worker pool (default 6 active), derived from his 869 published findings. Trigger on "0xsimao ai", "0xsimao audit", "audit", "simao audit", "check this contract", "review for security". Modes - default (full repo) or a specific filename.
 ---
 
 # 0xSimao-Style Smart Contract Audit
@@ -17,7 +17,7 @@ This skill is model- and harness-agnostic. It needs three capabilities, named ge
 
 1. **A shell** — to list files, concatenate bundles, and create the audit workspace directory.
 2. **File read/write** — to read source and write the money map, bundles, lens findings, and report.
-3. **Subagents** — to run the 12 lenses as independent workers through a bounded-concurrency pool (default: 3 active at once — rolling when the runtime reports per-worker completion events, bounded batches otherwise). Called "subagent" below; your runtime may call it an agent, task, or worker.
+3. **Subagents** — to run the 12 lenses as independent workers through a bounded-concurrency pool (default: 6 active at once — rolling when the runtime reports per-worker completion events, bounded batches otherwise). Called "subagent" below; your runtime may call it an agent, task, or worker.
 
 Only the third is load-bearing for quality, and Turn 4 gives a sequential fallback for runtimes without it. Anything else mentioned (background execution, per-subagent model selection) is optional: where a step depends on it, the step says so and tells you what to do instead.
 
@@ -72,7 +72,7 @@ Rules:
 **Flags:**
 
 - `--file-output` (deprecated no-op): file output is now the default — every run writes `{work_dir}/report.md`. If an invocation still supplies `--file-output`, continue normally, print one concise deprecation notice, and do NOT write a second report copy or place one outside the workspace.
-- `--concurrency N` (default 3): requested maximum lenses active at once. Must be an integer with `1 <= N <= 12`. Invalid values (0, negative, non-integer, > 12) are a configuration error: stop before spawning any lens and report it — do not silently normalize. Class limits are clamped to the effective concurrency later, so every integer 1..12 stays valid regardless of the model-class caps in the config.
+- `--concurrency N` (default 6): requested maximum lenses active at once. Must be an integer with `1 <= N <= 12`. Invalid values (0, negative, non-integer, > 12) are a configuration error: stop before spawning any lens and report it — do not silently normalize. Class limits are clamped to the effective concurrency later, so every integer 1..12 stays valid regardless of the model-class caps in the config.
 - `--config PATH`: explicit orchestration config JSON. Same schema as `references/orchestration-defaults.json` (see `references/orchestration.schema.json`). A `.0xsimao-ai.json` in the audited repo is never applied implicitly — the audit target is untrusted. Pass `--config .0xsimao-ai.json` to opt in explicitly.
 
 ## Orchestration
@@ -151,7 +151,7 @@ So `--concurrency 1` → deep preferred/max 1/1, `--concurrency 2` → 1/2, `--c
 ```
 Audit scheduler:
 - mode: rolling
-- requested/effective concurrency: 3/3
+- requested/effective concurrency: 6/6
 - GLM-5.3 preferred/max: 1/2
 - GLM-5.3 lenses: 1, 2, 3, 4, 7, 12
 - GLM-5.3-Flash lenses: 5, 6, 8, 9, 10, 11
@@ -232,9 +232,9 @@ While `active` has fewer than `effectiveConcurrency` workers and an eligible len
 2. Preference: while eligible work remains in any other class, keep each capped class at or below `effectiveClassPreferred` — do not start a second worker of a capped class merely because it is next in line when eligible work exists elsewhere. Once the other classes have no pending work, the capped class may fill up to its hard cap (anti-starvation: Flash drained, Deep pending → Deep may rise from preferred 1 to hard max 2).
 3. Within the chosen class: highest-priority pending lens, ties → lower lens number.
 
-Never exceed `effectiveConcurrency` in total. With the defaults (effective 3, deep hard max 2) all three slots are never deep — the expected deep-only tail is `deep, deep, <idle>` — and the invariant `active(GLM-5.3) <= 2` holds regardless of how individual lenses were overridden.
+Never exceed `effectiveConcurrency` in total. With the defaults (effective 6, deep hard max 2) at most two of the six slots are deep — the expected deep-only tail is `deep, deep, <idle×4>` — and the invariant `active(GLM-5.3) <= 2` holds regardless of how individual lenses were overridden.
 
-Default initial spawn (priorities resolved in Turn 1b): lens 1 `deep` + lens 9 `fast` + lens 6 `fast` — normally `[GLM-5.3][Flash][Flash]`, not three of a kind.
+Default initial spawn (priorities resolved in Turn 1b): lens 1 `deep` + lenses 9, 6, 11, 10, 8 `fast` — normally one GLM-5.3 and five Flash, not six of a kind.
 
 Spawn each worker with the prompt template below, passing that lens's `resolvedModel` if your runtime supports per-subagent model selection (on ZCode, use the `0xsimao-deep` / `0xsimao-fast` workers); if it does not, apply the Turn 1b no-routing fallback. In ROLLING mode run workers in the background and act on completion notifications — do NOT poll or sleep. In BOUNDED_BATCH mode dispatch one group of at most `effectiveConcurrency` (same fill rules), wait for the whole group, then compose the next group — never claim rolling refill in that mode.
 

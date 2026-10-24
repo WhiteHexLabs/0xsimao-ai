@@ -31,15 +31,15 @@ must not silently land on GLM-5.3.
 
 From `references/orchestration-defaults.json`:
 
-- requested concurrency: **3** lenses active at once, clamped by the
+- requested concurrency: **6** lenses active at once, clamped by the
   runtime's actual capacity to an **effective concurrency** (printed as
   `requested/effective` when they differ)
 - GLM-5.3 preferred active: **1** / hard max active: **2** — both clamped
   to the effective concurrency, so `--concurrency 1` yields deep 1/1
 - while GLM-5.3-Flash work remains, the scheduler keeps only one
   GLM-5.3 worker active; once Flash work is drained, up to two GLM-5.3
-  workers may run — with the default cap of 3, never all three slots
-- normal initial spawn: lens 1 (deep) + lens 9 (fast) + lens 6 (fast)
+  workers may run — with the default cap of 6, never all six slots
+- normal initial spawn: lens 1 (deep) + lenses 9, 6, 11, 10, 8 (fast)
 
 The orchestrator (the main ZCode session) keeps whatever model the user
 selected for it. This integration does not change the orchestrator

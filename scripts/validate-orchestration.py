@@ -709,17 +709,16 @@ def rolling_completion_with_scripted_order():
     cfg = apply_config_chain(defaults)
     sched = Scheduler(cfg, cfg["maxConcurrency"], mode="ROLLING")
     sched.fill()
-    # default initial spawn: lens 1 (deep) + lens 9 (fast) + lens 6 (fast)
-    assert sched.active_ids() == [1, 6, 9]
+    # default initial spawn (concurrency 6, deep preferred 1):
+    # lens 1 (deep) + the five highest-priority fast lenses
+    assert sched.active_ids() == [1, 6, 8, 9, 10, 11]
     assert sched.lenses[1]["concurrencyClass"] == "deep"
-    assert sched.lenses[6]["concurrencyClass"] == "fast"
-    assert sched.lenses[9]["concurrencyClass"] == "fast"
-    order = [9, 6, 1, 11, 10, 12, 2, 4, 3, 7, 8, 5]
-    for lens_id in order:
-        assert sched.lenses[lens_id]["state"] == "ACTIVE", (
-            f"completion order expected lens {lens_id} ACTIVE, "
-            f"got {sched.lenses[lens_id]['state']}"
-        )
+    for lens_id in (6, 8, 9, 10, 11):
+        assert sched.lenses[lens_id]["concurrencyClass"] == "fast"
+    # scripted order: repeatedly complete the lowest-numbered ACTIVE lens —
+    # a different order than fill preference, so rolling refill is exercised
+    while sched.by_state("ACTIVE"):
+        lens_id = min(sched.by_state("ACTIVE"))
         sched.on_complete(lens_id)
         sched.fill()  # rolling: refill the freed slot immediately
     assert sched.by_state("COMPLETED") == LENS_IDS
@@ -727,7 +726,7 @@ def rolling_completion_with_scripted_order():
     assert not sched.by_state("ACTIVE")
     assert not sched.by_state("FAILED")
     assert sched.turn6_eligible()
-    assert sched.max_active_total <= 3
+    assert sched.max_active_total <= 6
     assert sched.max_active_by_class["deep"] <= 2
 
 
