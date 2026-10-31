@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "maxConcurrency": 6,
+  "maxConcurrency": 4,
   "defaultModelClass": "fast",
   "modelFallbacks": {
     "GLM-5.3": ["GLM-5.3-Flash"]

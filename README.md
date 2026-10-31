@@ -48,7 +48,7 @@ flowchart TD
 ```
 
 1. Money map. The orchestrator reads the source and writes out assets, tracked totals, the asymmetry table, invariants, lifecycles and actor cohorts. Around 200 lines, injected into every lens.
-2. Twelve independent lenses, scheduled through a configurable bounded-concurrency pool. The default is six active subagents; when one completes, the next eligible lens immediately takes its slot. Each lens is a separate subagent with the full source, the money map, the method and its own specialty. No lens sees another lens's output, so two lenses landing on the same bug means something.
+2. Twelve independent lenses, scheduled through a configurable bounded-concurrency pool. The default is four active subagents; when one completes, the next eligible lens immediately takes its slot. Each lens is a separate subagent with the full source, the money map, the method and its own specialty. No lens sees another lens's output, so two lenses landing on the same bug means something.
 3. Dedup. Hard gates for function isolation, mechanism preservation, mitigation preservation and completeness.
 4. Judge. Four gates, then severity calibration.
 5. Report. `Description` and `Recommended Mitigation` per finding, printed in the conversation and written to `.0xsimao-auditor-work/report.md`.
@@ -104,7 +104,7 @@ If you do not want audit artifacts committed to the audited project, add this to
 
 The 12 lenses never launch as one unrestricted wave. They run through a bounded-concurrency pool:
 
-- **Default requested concurrency is 6**, clamped by runtime capability to an **effective concurrency** (printed as `requested/effective` when they differ). Any integer `1..12` is a valid concurrency; class limits are clamped to the effective value, so `--concurrency 1` works. With per-worker completion events the pool is rolling — any completion immediately frees its slot and the next eligible lens starts. Without them the scheduler reports **bounded-batch** mode and still never exceeds the effective concurrency. It is never fixed-wave batching.
+- **Default requested concurrency is 4**, clamped by runtime capability to an **effective concurrency** (printed as `requested/effective` when they differ). Any integer `1..12` is a valid concurrency; class limits are clamped to the effective value, so `--concurrency 1` works. With per-worker completion events the pool is rolling — any completion immediately frees its slot and the next eligible lens starts. Without them the scheduler reports **bounded-batch** mode and still never exceeds the effective concurrency. It is never fixed-wave batching.
 - Concurrency is configurable: `--concurrency N` (1–12) or a `--config` file. A `.0xsimao-ai.json` in the audited repo is applied only by explicit opt-in (`--config .0xsimao-ai.json`) — audit-target configuration is untrusted.
 - On runtimes that can pin a model per subagent, lenses are model-routed, and caps are enforced against the **resolved** model — a lens pinned directly to `GLM-5.3` counts against the Deep cap even if its class says `fast`. The ZCode default profile:
 
@@ -114,7 +114,7 @@ The 12 lenses never launch as one unrestricted wave. They run through a bounded-
 | GLM-5.3-Flash | 5, 6, 8, 9, 10, 11 — the systematic / enumerative lenses | fills the other slots |
 
 - **Default model for an unspecified ZCode lens: GLM-5.3-Flash.** New or unassigned lenses never silently land on the expensive class.
-- Normal initial spawn is one GLM-5.3 + five GLM-5.3-Flash. While Flash work remains, the scheduler keeps a single GLM-5.3 active; once Flash work drains, up to two GLM-5.3 workers run — with the default cap of 6, never all six slots.
+- Normal initial spawn is one GLM-5.3 + three GLM-5.3-Flash. While Flash work remains, the scheduler keeps a single GLM-5.3 active; once Flash work drains, up to two GLM-5.3 workers run — with the default cap of 4, never all four slots.
 - Execution failures are bounded to two attempts per lens (initial run + one retry); a spawn the runtime refuses never consumes an attempt. If a lens ends FAILED, the audit stops instead of reporting 11/12.
 - Runtimes without per-subagent model selection still run all 12 independent lenses at the configured concurrency, on the runtime's default model, with one concise notice.
 
@@ -156,10 +156,10 @@ Everything above only saves you from retyping that line. Pasting the contents of
 ## Usage
 
 ```
-run 0xSimao AI                              # full repo, default concurrency 6
+run 0xSimao AI                              # full repo, default concurrency 4
 run 0xSimao AI on Vault.sol                 # specific files
 run 0xSimao AI --concurrency 1              # one lens at a time (valid)
-run 0xSimao AI --concurrency 6              # default: six lenses active
+run 0xSimao AI --concurrency 4              # default: four lenses active
 run 0xSimao AI --concurrency 12             # every lens at once
 run 0xSimao AI --config /trusted/path/audit-config.json   # explicit config
 run 0xSimao AI --config .0xsimao-ai.json    # explicit opt-in to the repo-local config
@@ -168,7 +168,7 @@ run 0xSimao AI Vault.sol --concurrency 2    # combine freely
 
 Every invocation creates `./.0xsimao-auditor-work/` in the directory the audit was started from (see [Audit workspace](#audit-workspace)) and always writes `report.md` there; the report is also returned in the conversation. `--file-output` is a deprecated no-op kept only for compatibility with older invocations.
 
-The 12 lenses run through a bounded pool (default: 6 active subagents, rolling refill when the runtime supports it) over the in-scope source. Token spend is significant on a large codebase, so scope to specific files while iterating.
+The 12 lenses run through a bounded pool (default: 4 active subagents, rolling refill when the runtime supports it) over the in-scope source. Token spend is significant on a large codebase, so scope to specific files while iterating.
 
 Repo-local overrides can live in a `.0xsimao-ai.json` at the audited repo root — but the audit target is untrusted, so the file is never loaded automatically. Apply it only when you trust it, by passing it explicitly:
 
@@ -192,7 +192,7 @@ Sherlock's [DODO Cross-Chain DEX](https://audits.sherlock.xyz/contests/991) cont
 | 0xSimao AI | 15/17 (88.2%) | ~11 min (historical benchmark using the original 12-way parallel scheduler) | ~1.1M |
 | pashov solidity-auditor v3 | 14/17 (82.4%) | 19–28 min | 3.3–4.8M |
 
-The `~11 min` figure was obtained under the old unrestricted 12-way parallel scheduler. The current scheduler defaults to max concurrency 6 and uses model-aware routing, so the historical runtime is not representative of the current wall-clock duration. Re-benchmark before publishing a replacement runtime.
+The `~11 min` figure was obtained under the old unrestricted 12-way parallel scheduler. The current scheduler defaults to max concurrency 4 and uses model-aware routing, so the historical runtime is not representative of the current wall-clock duration. Re-benchmark before publishing a replacement runtime.
 
 This is not a head-to-head. The second row is there for scale. The two tools were run by different people at different times, each scored by its own author, with no shared harness. The claim being made is only that the skill finds real issues in a real contest at a useful rate.
 

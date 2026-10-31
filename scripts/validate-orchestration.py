@@ -709,11 +709,11 @@ def rolling_completion_with_scripted_order():
     cfg = apply_config_chain(defaults)
     sched = Scheduler(cfg, cfg["maxConcurrency"], mode="ROLLING")
     sched.fill()
-    # default initial spawn (concurrency 6, deep preferred 1):
-    # lens 1 (deep) + the five highest-priority fast lenses
-    assert sched.active_ids() == [1, 6, 8, 9, 10, 11]
+    # default initial spawn (concurrency 4, deep preferred 1):
+    # lens 1 (deep) + the three highest-priority fast lenses
+    assert sched.active_ids() == [1, 6, 9, 11]
     assert sched.lenses[1]["concurrencyClass"] == "deep"
-    for lens_id in (6, 8, 9, 10, 11):
+    for lens_id in (6, 9, 11):
         assert sched.lenses[lens_id]["concurrencyClass"] == "fast"
     # scripted order: repeatedly complete the lowest-numbered ACTIVE lens —
     # a different order than fill preference, so rolling refill is exercised
@@ -726,7 +726,7 @@ def rolling_completion_with_scripted_order():
     assert not sched.by_state("ACTIVE")
     assert not sched.by_state("FAILED")
     assert sched.turn6_eligible()
-    assert sched.max_active_total <= 6
+    assert sched.max_active_total <= 4
     assert sched.max_active_by_class["deep"] <= 2
 
 
