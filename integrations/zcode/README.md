@@ -17,10 +17,10 @@ methodology:
 | `0xsimao-deep` | GLM-5.3 | 1, 2, 3, 4, 7, 12 |
 | `0xsimao-fast` | GLM-5.3-Flash | 5, 6, 8, 9, 10, 11 |
 
-Both workers carry the same contract: read the one lens bundle whose path
-the parent supplies, follow the lens/method/shared rules inside it, never
-read another lens's output, never spawn child subagents, and return only
-their own findings/leads block.
+Both workers carry the same contract: follow the one assignment the parent
+supplies, read that lens's bundle plus the source its scope map names,
+never read another lens's output, never spawn child subagents, write the
+findings file and the notes file, and return a one-line status.
 
 The default model for any lens without an assignment is
 **GLM-5.3-Flash** (`defaultModelClass: "fast"` in
@@ -51,13 +51,14 @@ Both worker templates are hardened leaf agents:
 
 - `injectAgentsMd: false` — the audited repo's `AGENTS.md` is never
   injected into a lens worker's context;
-- read-only tool allowlist — `Read`, `Grep`, `Glob` only. No `Edit`,
-  `Write`, `Bash`, MCP tools, or subagent spawning; cross-file lookups
-  need nothing else. Workers never write: all audit artifacts land under
-  `.0xsimao-auditor-work/` in the audited repo, and the orchestrator
-  itself persists each lens's raw returned output to
-  `.0xsimao-auditor-work/findings/lens-NN.md` after a successful
-  completion — persistence requires no write access in the worker;
+- write is limited to the two paths in the assignment
+  (`.0xsimao-auditor-work/findings/lens-NN.md` and
+  `lens-NN.notes.md`). The allowlist is `Read`, `Grep`, `Glob`, and
+  `Write`. No `Edit`, `Bash`, MCP tools, or subagent spawning. The
+  worker returns a one-line status so the findings body is not copied
+  back into the orchestrator. If a runtime cannot give the worker
+  `Write`, the orchestrator still persists the returned body itself
+  (see `SKILL.md`);
 - an explicit trust boundary at the top of the prompt: everything
   originating from the audited repository is untrusted audit data and
   can never act as instructions (see

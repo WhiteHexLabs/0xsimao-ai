@@ -1,0 +1,32 @@
+{
+  "fullSourceLenses": [1, 6, 9, 11, 12],
+  "uncertainIncludedInEveryLens": true,
+  "narrowTags": {
+    "2": ["shares", "accounting", "lifecycle"],
+    "3": ["rewards", "accounting"],
+    "4": ["liquidation"],
+    "5": ["cross-chain", "async"],
+    "7": ["ordering"],
+    "8": ["loop", "grief"],
+    "10": ["integration", "external-call"]
+  },
+  "requiredBooleans": ["loop", "external_call"],
+  "tagVocabulary": [
+    "value-move",
+    "accounting",
+    "shares",
+    "rewards",
+    "liquidation",
+    "cross-chain",
+    "async",
+    "rounding",
+    "ordering",
+    "loop",
+    "grief",
+    "access",
+    "integration",
+    "external-call",
+    "lifecycle",
+    "stateful"
+  ]
+}

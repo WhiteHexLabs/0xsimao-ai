@@ -21,7 +21,9 @@ It:
    `.0xsimao-auditor-work` resolution, start-of-run reset scoping,
    zero-padded lens filenames, persistence of findings/bundles/report,
    discovery exclusion of the workspace, and the deprecated
-   `--file-output` no-op.
+   `--file-output` no-op;
+7. checks the findings-index schema, scope-map primary sets, the
+   1600-character return note, and that SKILL.md stays a short brief.
 
 Exit code 0 = every check passed.
 """
@@ -1048,6 +1050,320 @@ def turn5_blocks_without_twelve_persisted_findings():
         )
         accept_lens_output(audit_root, 12, "FINDING 12\n")
         assert workspace_complete(audit_root)
+
+
+# --------------------------------------------------------------------------
+# Context budget, scope rules, findings index (SKILL.md + references)
+# --------------------------------------------------------------------------
+
+SCOPE_RULES_PATH = ROOT / "references" / "scope-rules.json"
+FINDINGS_SCHEMA_PATH = ROOT / "references" / "findings-index.schema.json"
+SKILL_PATH = ROOT / "SKILL.md"
+RETURN_NOTE_LIMIT = 1600
+# Eager SKILL.md was 33384 chars before the split. Stay well under that.
+SKILL_CHAR_BUDGET = 16000
+
+
+def load_scope_rules():
+    return load_json(SCOPE_RULES_PATH)
+
+
+def primary_paths(files, lens_id, rules=None):
+    """Which in-scope files a lens must read. Mirrors references/scope-rules.md.
+
+    files: iterable of {path, tags, uncertain}. A full-source lens lists
+    every file. An uncertain file is listed for every lens. A narrow lens
+    lists files whose tags intersect narrowTags for that lens.
+    """
+    rules = load_scope_rules() if rules is None else rules
+    full = {int(n) for n in rules["fullSourceLenses"]}
+    narrow = {int(key): set(value) for key, value in rules["narrowTags"].items()}
+    selected = []
+    for item in files:
+        tags = set(item.get("tags") or [])
+        uncertain = bool(item.get("uncertain"))
+        if lens_id in full or uncertain or (tags & narrow.get(lens_id, set())):
+            selected.append(item["path"])
+    return selected
+
+
+def load_findings_schema():
+    schema = load_json(FINDINGS_SCHEMA_PATH)
+    if schema.get("$id") != "whitehexlabs.audit-findings-index/v1":
+        raise ValidationError("findings index $id must be whitehexlabs.audit-findings-index/v1")
+    return schema
+
+
+def validate_findings_index(doc):
+    """Schema plus the completeness rules dedup depends on."""
+    schema = load_findings_schema()
+    validate_schema(doc, schema, defs=schema.get("$defs", {}))
+    counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+    leads = 0
+    for index, entry in enumerate(doc["findings"]):
+        if entry["kind"] == "lead":
+            leads += 1
+            if entry["severity"] != "unverified":
+                raise ValidationError(f"findings[{index}]: lead severity must be unverified")
+        else:
+            if entry["severity"] not in counts:
+                raise ValidationError(f"findings[{index}]: bad finding severity {entry['severity']!r}")
+            counts[entry["severity"]] += 1
+            if not entry["evidence"]:
+                raise ValidationError(f"findings[{index}]: finding evidence must not be empty")
+            if not entry.get("path"):
+                raise ValidationError(f"findings[{index}]: finding attack path must not be empty")
+            for evidence in entry["evidence"]:
+                if not evidence["detail"].strip():
+                    raise ValidationError(f"findings[{index}]: evidence detail must not be blank")
+    for key, value in counts.items():
+        if doc["counts"][key] != value:
+            raise ValidationError(f"counts.{key} is {doc['counts'][key]}, entries have {value}")
+    if doc["counts"]["leads"] != leads:
+        raise ValidationError(f"counts.leads is {doc['counts']['leads']}, entries have {leads}")
+    return True
+
+
+def sample_findings_index():
+    return {
+        "schema": "whitehexlabs.audit-findings-index/v1",
+        "producer": "0xsimao-ai",
+        "run_id": "run-1",
+        "target": ".",
+        "scope": ["src/Vault.sol"],
+        "report_path": ".0xsimao-auditor-work/report.md",
+        "log_path": ".0xsimao-auditor-work/run.log",
+        "counts": {"critical": 0, "high": 1, "medium": 0, "low": 0, "info": 0, "leads": 1},
+        "findings": [
+            {
+                "id": "H-1",
+                "kind": "finding",
+                "severity": "high",
+                "title": "`Vault::redeem` does not decrease `totalAssets` on the early-exit branch",
+                "contract": "Vault",
+                "function": "redeem",
+                "bug_class": "accounting-desync",
+                "group_key": "Vault | redeem | accounting-desync",
+                "locations": [{"file": "src/Vault.sol", "line": 120, "function": "redeem"}],
+                "root_cause": "src/Vault.sol:120 the early-return branch transfers `assets` and never calls `totalAssets` decrement",
+                "internal_pre": "None",
+                "external_pre": "None",
+                "path": [
+                    "1. Alice deposits 100e18.",
+                    "2. Alice redeems on the early-exit branch.",
+                    "3. Bob withdraws last and is short 100e18.",
+                ],
+                "description": "`Vault::redeem` transfers assets on the early-exit branch and does not decrement `totalAssets`, so later withdrawers are insolvent.",
+                "impact": "The last withdrawer is short by the amount early redeemers took.",
+                "mitigation": "Decrement `totalAssets` on the early-exit branch by the amount transferred.",
+                "evidence": [
+                    {
+                        "file": "src/Vault.sol",
+                        "line": 120,
+                        "detail": "if (paused) { token.transfer(msg.sender, assets); return assets; }",
+                    }
+                ],
+                "lenses": [1, 12],
+            },
+            {
+                "id": "LEAD-1",
+                "kind": "lead",
+                "severity": "unverified",
+                "title": "`Vault::donate` may desync the live balance",
+                "contract": "Vault",
+                "function": "donate",
+                "bug_class": "donation",
+                "group_key": "Vault | donate | donation",
+                "locations": [{"file": "src/Vault.sol", "line": 40}],
+                "root_cause": "src/Vault.sol:40 reads balanceOf(address(this)) and the donation path was not fully traced",
+                "description": "A direct token transfer changes balanceOf without a matching total.",
+                "impact": "Unverified: could inflate the share price if the read is used in convertToShares.",
+                "mitigation": "Confirm whether convertToShares uses the live balance; if it does, account donations explicitly.",
+                "evidence": [
+                    {
+                        "file": "src/Vault.sol",
+                        "line": 40,
+                        "detail": "uint256 bal = token.balanceOf(address(this));",
+                    }
+                ],
+                "lenses": [1],
+            },
+        ],
+    }
+
+
+def build_return_note(
+    *,
+    done=True,
+    counts,
+    report_path,
+    index_path,
+    log_path,
+    mode,
+    effective,
+    warnings=(),
+    titles=(),
+):
+    """The parent-facing note. Required lines always stay. Titles drop
+    first, then warnings, until the note is within 1600 characters.
+    Finding bodies are not a field here."""
+    status = "done" if done else "incomplete"
+    required = [
+        f"0xsimao-ai {status}",
+        (
+            "counts: critical={critical} high={high} medium={medium} "
+            "low={low} info={info} leads={leads}"
+        ).format(**counts),
+        f"scheduler: {mode} effective={effective}",
+        f"report: {report_path}",
+        f"index: {index_path}",
+        f"log: {log_path}",
+    ]
+    optional = [f"warning: {item}" for item in warnings] + [f"title: {item}" for item in titles]
+    kept = list(optional)
+    while True:
+        note = "\n".join(required + kept)
+        if len(note) <= RETURN_NOTE_LIMIT:
+            return note
+        if not kept:
+            raise ValidationError("return note required lines exceed 1600 characters")
+        kept.pop()
+
+
+def _agent_body(path):
+    text = Path(path).read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        raise ValidationError(f"{path} missing frontmatter")
+    end = text.find("\n---", 3)
+    if end < 0:
+        raise ValidationError(f"{path} unclosed frontmatter")
+    return text[end + 4 :].strip()
+
+
+@check
+def scope_rules_cover_every_lens_once():
+    rules = load_scope_rules()
+    full = [int(n) for n in rules["fullSourceLenses"]]
+    narrow = sorted(int(key) for key in rules["narrowTags"])
+    assert full == [1, 6, 9, 11, 12], full
+    assert narrow == [2, 3, 4, 5, 7, 8, 10], narrow
+    assert set(full).isdisjoint(narrow)
+    assert sorted(set(full) | set(narrow)) == LENS_IDS
+    vocabulary = set(rules["tagVocabulary"])
+    for tags in rules["narrowTags"].values():
+        unknown = set(tags) - vocabulary
+        assert not unknown, unknown
+
+
+@check
+def primary_sets_keep_full_lenses_and_skip_irrelevant_files():
+    vault = {"path": "src/Vault.sol", "tags": ["accounting", "lifecycle", "shares"], "uncertain": False}
+    bridge = {"path": "src/Bridge.sol", "tags": ["cross-chain", "async"], "uncertain": False}
+    mystery = {"path": "src/Mystery.sol", "tags": [], "uncertain": True}
+    files = [vault, bridge, mystery]
+    for lens_id in (1, 6, 9, 11, 12):
+        assert primary_paths(files, lens_id) == [
+            "src/Vault.sol",
+            "src/Bridge.sol",
+            "src/Mystery.sol",
+        ], lens_id
+    # Lens 5 reads the bridge and the uncertain file, not the plain vault.
+    assert primary_paths(files, 5) == ["src/Bridge.sol", "src/Mystery.sol"]
+    # Lens 4 has no liquidation tag here.
+    assert primary_paths(files, 4) == ["src/Mystery.sol"]
+    # Accounting tag pulls the vault into the share lens; the bridge does not.
+    assert primary_paths(files, 2) == ["src/Vault.sol", "src/Mystery.sol"]
+    # A fully read file with no matching tag is not primary for a narrow lens.
+    plain = [{"path": "src/Registry.sol", "tags": ["stateful"], "uncertain": False}]
+    assert primary_paths(plain, 5) == []
+    assert primary_paths(plain, 8) == []
+    assert primary_paths(plain, 1) == ["src/Registry.sol"]
+
+
+@check
+def findings_index_fixture_validates_and_rejects_clipped_evidence():
+    validate_findings_index(sample_findings_index())
+    missing = sample_findings_index()
+    missing["findings"][0]["evidence"] = []
+    try:
+        validate_findings_index(missing)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("a finding with empty evidence must fail")
+    bad_schema = sample_findings_index()
+    bad_schema["schema"] = "whitehexlabs.audit-findings-index/v0"
+    try:
+        validate_findings_index(bad_schema)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("wrong schema id must fail")
+
+
+@check
+def return_note_stays_within_1600_characters():
+    counts = {"critical": 0, "high": 2, "medium": 1, "low": 0, "info": 3, "leads": 4}
+    note = build_return_note(
+        counts=counts,
+        report_path=".0xsimao-auditor-work/report.md",
+        index_path=".0xsimao-auditor-work/findings-index.json",
+        log_path=".0xsimao-auditor-work/run.log",
+        mode="rolling",
+        effective=4,
+        warnings=("repo-local config ignored",),
+        titles=("H-1 redeem leaves totalAssets unchanged", "H-2 index advanced for free"),
+    )
+    assert len(note) <= RETURN_NOTE_LIMIT
+    assert "report: .0xsimao-auditor-work/report.md" in note
+    assert "findings-index.json" in note
+    assert "high=2" in note
+    # A flood of titles must not push the paths out.
+    flooded = build_return_note(
+        counts=counts,
+        report_path=".0xsimao-auditor-work/report.md",
+        index_path=".0xsimao-auditor-work/findings-index.json",
+        log_path=".0xsimao-auditor-work/run.log",
+        mode="bounded-batch",
+        effective=4,
+        titles=tuple(f"{'H-1 ' * 80}title {n}" for n in range(30)),
+    )
+    assert len(flooded) <= RETURN_NOTE_LIMIT
+    assert "index: .0xsimao-auditor-work/findings-index.json" in flooded
+    assert flooded.count("\ntitle:") < 30
+
+
+@check
+def skill_brief_stays_under_budget_and_names_the_index():
+    text = SKILL_PATH.read_text(encoding="utf-8")
+    assert len(text) <= SKILL_CHAR_BUDGET, len(text)
+    for phrase in (
+        "whitehexlabs.audit-findings-index/v1",
+        "1600",
+        "findings-index.json",
+        "run.log",
+        "Do not concatenate `source.md` into the bundles.",
+        "NO_SURFACE:",
+    ):
+        assert phrase in text, phrase
+    assert "source.md` + `money-map.md`" not in text
+    method = (ROOT / "references" / "simao-method.md").read_text(encoding="utf-8")
+    card = (ROOT / "references" / "method-card.md").read_text(encoding="utf-8")
+    assert len(card) < len(method)
+    prompt = (ROOT / "references" / "lens-worker-prompt.md").read_text(encoding="utf-8")
+    assert len(prompt) < 4000, len(prompt)
+
+
+@check
+def zcode_workers_share_one_body():
+    deep = ROOT / "integrations" / "zcode" / "agents" / "0xsimao-deep.md"
+    fast = ROOT / "integrations" / "zcode" / "agents" / "0xsimao-fast.md"
+    assert _agent_body(deep) == _agent_body(fast)
+    body = _agent_body(deep)
+    assert "500 characters" in body
+    assert "Write" in deep.read_text(encoding="utf-8")
+    # The standing prompt must not tell the worker to swallow the whole tree.
+    assert "all in-scope source" not in body
 
 
 def main():
