@@ -32,18 +32,18 @@ LEAD → FINDING if the full path exists in source (as already recorded in the l
 
 Format per `report-formatting.md`. Exclude rejected items. Write the complete report to `{work_dir}/report.md` — one file, inside the workspace, no second copy at the repository root. `--file-output` remains a deprecated no-op: if it was passed, log one deprecation line and do not write another copy.
 
-Write `{work_dir}/findings-index.json` per `findings-index.md`. Descriptions, mitigations, paths, and evidence details are the full text. Do not clip them to save bytes.
+Write `{work_dir}/findings-index.yaml` per `findings-index.md` when extraction is reliable. `run_id` and `step` come from the execution prompt. Root cause, mechanism, preconditions, impact, and the `primary-report` locator are the full text. Do not clip the list. If you cannot extract it reliably, write no index file.
 
 ## 5. Keep the workspace
 
-Do not delete `report.md`, `money-map.md`, `scope-map.md`, `source.md`, `findings/`, `bundles/`, `poc/`, `findings-index.json`, or `run.log`.
+Do not delete `report.md`, `money-map.md`, `scope-map.md`, `source.md`, `findings/`, `bundles/`, `poc/`, `findings-index.yaml`, or `run.log`.
 
 Log:
 
 ```
 Audit artifacts:
 - report: .0xsimao-auditor-work/report.md
-- findings index: .0xsimao-auditor-work/findings-index.json
+- findings index: .0xsimao-auditor-work/findings-index.yaml
 - money map: .0xsimao-auditor-work/money-map.md
 - scope map: .0xsimao-auditor-work/scope-map.md
 - raw lens findings: .0xsimao-auditor-work/findings/

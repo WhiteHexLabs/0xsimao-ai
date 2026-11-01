@@ -20,7 +20,7 @@ This file is the eager brief. Open a reference only in the turn that names it. D
 | 2 | `references/simao-method.md`, `references/scope-rules.md`, `references/scope-rules.json`, then each in-scope source file once |
 | 3 | nothing new; shell `cat` writes `source.md` and the bundles |
 | 4 | `references/lens-worker-prompt.md` once, then fill it per lens |
-| 6 | `references/dedup-report.md`, `references/severity-calibration.md`, `references/report-formatting.md`, `references/findings-index.md`, `references/findings-index.schema.json`, then the twelve `findings/lens-NN.md` files |
+| 6 | `references/dedup-report.md`, `references/severity-calibration.md`, `references/report-formatting.md`, `references/findings-index.md`, `references/findings-index.yaml`, then the twelve `findings/lens-NN.md` files |
 
 Workers load their own bundle and the source their scope-map section names. They do not load this scheduler.
 
@@ -42,7 +42,7 @@ Everything this skill writes lives under `{audit_root}/.0xsimao-auditor-work/`. 
 ```
 .0xsimao-auditor-work/
 ├── report.md
-├── findings-index.json
+├── findings-index.yaml
 ├── run.log
 ├── money-map.md
 ├── scope-map.md
@@ -140,7 +140,7 @@ Follow the drain barrier in `references/scheduler.md`. Do not start Turn 6 with 
 
 ## Turn 6 — Dedup and emit
 
-Follow `references/dedup-report.md`. Write the report and `{work_dir}/findings-index.json` (`whitehexlabs.audit-findings-index/v1`). If the execution prompt gives another index path or schema, follow `references/findings-index.md`.
+Follow `references/dedup-report.md`. Write the report, then `{work_dir}/findings-index.yaml` when `references/findings-index.md` says the index can be extracted. The document is YAML matching `whitehexlabs.audit-findings-index/v1`. Do not write a JSON index.
 
 ## Return note
 
@@ -149,7 +149,7 @@ The final message is the only thing the parent keeps. It is at most **1600 chara
 - `0xsimao-ai` and `incomplete` or `done`
 - counts: critical, high, medium, low, info, leads
 - one scheduler line: mode and effective concurrency
-- paths to `report.md`, `findings-index.json`, and `run.log`
+- paths to `report.md`, `findings-index.yaml` (or `index: not emitted; finding count unknown (<reason>)`), and `run.log`
 - warnings that change trust or routing: ignored repo-local config, a model fallback, routing unavailable, `--file-output` deprecation
 - up to three finding titles, only if the character budget remains
 

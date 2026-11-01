@@ -51,7 +51,7 @@ flowchart TD
 2. Twelve independent lenses, scheduled through a configurable bounded-concurrency pool. The default is four active subagents; when one completes, the next eligible lens immediately takes its slot. Each lens gets the money map, the method card, and its own specialty. Lenses 1, 6, 9, 11, and 12 read the combined source once. The other seven read the files the scope map marks for them, plus any file a saturation hit names. No lens sees another lens's output, so two lenses landing on the same bug means something. Each worker writes its findings file and returns a one-line status.
 3. Dedup. Hard gates for function isolation, mechanism preservation, mitigation preservation and completeness.
 4. Judge. Four gates, then severity calibration.
-5. Report, written to `.0xsimao-auditor-work/report.md`, and a `whitehexlabs.audit-findings-index/v1` index beside it. The conversation gets a short note with counts and paths, not the report body.
+5. Report, written to `.0xsimao-auditor-work/report.md`, and a `whitehexlabs.audit-findings-index/v1` YAML index beside it when the run id and step are known. The conversation gets a short note with counts and paths, not the report body.
 
 ## The lenses
 
@@ -83,7 +83,7 @@ relative to the directory where the audit was started. Auditing a nested file (`
 ```
 .0xsimao-auditor-work/
 ├── report.md            final report
-├── findings-index.json  whitehexlabs.audit-findings-index/v1
+├── findings-index.yaml  whitehexlabs.audit-findings-index/v1
 ├── run.log              scheduler and judge notes
 ├── money-map.md         the money map
 ├── scope-map.md         per-file index and per-lens read set
@@ -169,7 +169,7 @@ run 0xSimao AI --config .0xsimao-ai.json    # explicit opt-in to the repo-local 
 run 0xSimao AI Vault.sol --concurrency 2    # combine freely
 ```
 
-Every invocation creates `./.0xsimao-auditor-work/` in the directory the audit was started from (see [Audit workspace](#audit-workspace)) and always writes `report.md` and `findings-index.json` there. The conversation gets a short completion note (counts and paths, at most 1600 characters). `--file-output` is a deprecated no-op kept only for compatibility with older invocations.
+Every invocation creates `./.0xsimao-auditor-work/` in the directory the audit was started from (see [Audit workspace](#audit-workspace)) and always writes `report.md` there. It also writes `findings-index.yaml` when the execution prompt supplies `run_id` and `step` and every finding can be extracted. The conversation gets a short completion note (counts and paths, at most 1600 characters). `--file-output` is a deprecated no-op kept only for compatibility with older invocations.
 
 The 12 lenses run through a bounded pool (default: 4 active subagents, rolling refill when the runtime supports it) over the in-scope source. Token spend is significant on a large codebase, so scope to specific files while iterating.
 
@@ -215,8 +215,8 @@ references/
   method-card.md                      procedure packed into every lens bundle
   scope-rules.md                      which lenses read which files, and why
   dedup-report.md                     Turn 6 dedup, judge, report
-  findings-index.md                   index contract
-  findings-index.schema.json          whitehexlabs.audit-findings-index/v1
+  findings-index.md                   how this skill fills the index
+  findings-index.yaml                 whitehexlabs.audit-findings-index/v1 template
   severity-calibration.md             four gates + severity assignment
   report-formatting.md                the report format
   orchestration-defaults.json         scheduler + model-routing defaults

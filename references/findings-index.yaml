@@ -1,0 +1,51 @@
+# findings-index.yaml — the unified findings index for ONE audit step.
+# Extracted by the step's executor before `record` and declared in
+# result.yaml as an artifact with `type: findings`. The merge stage reads
+# this index first and falls back to the step's primary report only when
+# no valid index exists.
+#
+# Extraction rules:
+#   - map the skill's native findings when it produces them; otherwise
+#     extract from the primary report you wrote, in the same execution
+#     context, so the main session never re-reads the full report
+#   - keep root cause, mechanism, attack preconditions, impact and the
+#     evidence locator for every finding — never just title + severity
+#   - requires_privileged_actor: `unknown` is NOT `false`; unknown entries
+#     must be verified at aggregation before any filtering
+#   - if the index cannot be extracted reliably, declare no index and say
+#     so in result.yaml's note — an unextractable index means the finding
+#     count is UNKNOWN; an empty findings list is only valid when the
+#     report itself states zero findings (with coverage limitations)
+#   - do not truncate the findings list for length; a large index is read
+#     in batches at the merge stage
+#   - evidence cites the stable canonical artifact id `primary-report`
+#     (the only id supported in this version); the locator names the
+#     heading or line inside that report
+
+schema: whitehexlabs.audit-findings-index/v1
+run_id: run-20260101-000000-000000-ab12   # must match this step's run
+step: 1
+
+coverage:
+  summary: >-
+    Executor-declared coverage of this step: what was reviewed and how.
+    This is a declaration, not a machine-verified coverage ratio.
+  limitations:
+    - "e.g. fee-on-transfer deposit path not executed"
+
+findings:
+  - id: local-001               # unique within this index
+    original_finding_id: H-01   # the skill's own finding id, or null
+    title: "Donation-based share-price inflation"
+    root_cause: "unprotected initial share-price formation"
+    mechanism: "donate assets before the first deposit to inflate the rate"
+    locations:
+      - src/Vault.sol:42
+    preconditions:
+      - "vault holds zero or few shares"
+    impact: "later depositors' funds can be skimmed by the first depositor"
+    requires_privileged_actor: unknown   # true | false | unknown — never omit
+    severity_hint: HIGH                 # advisory only; or null
+    evidence:
+      - artifact_id: primary-report
+        locator: "section 'Finding 1' of the primary report"
