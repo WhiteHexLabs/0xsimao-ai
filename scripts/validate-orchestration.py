@@ -21,7 +21,10 @@ It:
    `.0xsimao-auditor-work` resolution, start-of-run reset scoping,
    zero-padded lens filenames, persistence of findings/bundles/report,
    discovery exclusion of the workspace, and the deprecated
-   `--file-output` no-op.
+   `--file-output` no-op;
+7. checks the findings-index contract (whitehexlabs.audit-findings-index/v1
+   YAML shape), scope-map primary sets, the 1600-character return note,
+   and that SKILL.md stays a short brief.
 
 Exit code 0 = every check passed.
 """
@@ -1048,6 +1051,420 @@ def turn5_blocks_without_twelve_persisted_findings():
         )
         accept_lens_output(audit_root, 12, "FINDING 12\n")
         assert workspace_complete(audit_root)
+
+
+# --------------------------------------------------------------------------
+# Context budget, scope rules, findings index (SKILL.md + references)
+# --------------------------------------------------------------------------
+
+SCOPE_RULES_PATH = ROOT / "references" / "scope-rules.json"
+FINDINGS_TEMPLATE_PATH = ROOT / "references" / "findings-index.yaml"
+SKILL_PATH = ROOT / "SKILL.md"
+INDEX_SCHEMA = "whitehexlabs.audit-findings-index/v1"
+INDEX_TOP_LEVEL = ("schema", "run_id", "step", "coverage", "findings")
+INDEX_COVERAGE_KEYS = ("summary", "limitations")
+INDEX_FINDING_KEYS = (
+    "id",
+    "original_finding_id",
+    "title",
+    "root_cause",
+    "mechanism",
+    "locations",
+    "preconditions",
+    "impact",
+    "requires_privileged_actor",
+    "severity_hint",
+    "evidence",
+)
+INDEX_EVIDENCE_KEYS = ("artifact_id", "locator")
+RETURN_NOTE_LIMIT = 1600
+# Eager SKILL.md was 33384 chars before the split. Stay well under that.
+SKILL_CHAR_BUDGET = 16000
+
+
+def load_scope_rules():
+    return load_json(SCOPE_RULES_PATH)
+
+
+def primary_paths(files, lens_id, rules=None):
+    """Which in-scope files a lens must read. Mirrors references/scope-rules.md.
+
+    files: iterable of {path, tags, uncertain}. A full-source lens lists
+    every file. An uncertain file is listed for every lens. A narrow lens
+    lists files whose tags intersect narrowTags for that lens.
+    """
+    rules = load_scope_rules() if rules is None else rules
+    full = {int(n) for n in rules["fullSourceLenses"]}
+    narrow = {int(key): set(value) for key, value in rules["narrowTags"].items()}
+    selected = []
+    for item in files:
+        tags = set(item.get("tags") or [])
+        uncertain = bool(item.get("uncertain"))
+        if lens_id in full or uncertain or (tags & narrow.get(lens_id, set())):
+            selected.append(item["path"])
+    return selected
+
+
+def _require_exact_keys(value, allowed, label):
+    if not isinstance(value, dict):
+        raise ValidationError(f"{label} must be a mapping")
+    unknown = sorted(set(value) - set(allowed))
+    if unknown:
+        raise ValidationError(f"unknown key {unknown[0]}")
+    missing = [key for key in allowed if key not in value]
+    if missing:
+        raise ValidationError(missing[0])
+
+
+def validate_findings_index(doc, expected_run_id=None, expected_step=None):
+    """whitehexlabs.audit-findings-index/v1, matching the orchestrator rules.
+
+    Top-level keys are exactly schema, run_id, step, coverage, findings.
+    requires_privileged_actor is boolean true, boolean false, or the
+    string 'unknown'. The strings 'true' and 'false' are rejected.
+    Evidence is a non-empty list of {artifact_id: primary-report, locator}.
+    """
+    _require_exact_keys(doc, INDEX_TOP_LEVEL, "findings index")
+    if doc["schema"] != INDEX_SCHEMA:
+        raise ValidationError("findings-index schema")
+    if not isinstance(doc["run_id"], str) or not doc["run_id"].strip():
+        raise ValidationError("run_id")
+    if expected_run_id is not None and doc["run_id"] != expected_run_id:
+        raise ValidationError("run_id")
+    if isinstance(doc["step"], bool) or not isinstance(doc["step"], int):
+        raise ValidationError("step")
+    if expected_step is not None and doc["step"] != expected_step:
+        raise ValidationError("step")
+    coverage = doc["coverage"]
+    if not isinstance(coverage, dict):
+        raise ValidationError("coverage.summary")
+    coverage_unknown = sorted(set(coverage) - set(INDEX_COVERAGE_KEYS))
+    if coverage_unknown:
+        raise ValidationError(f"unknown key {coverage_unknown[0]}")
+    summary = coverage.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        raise ValidationError("coverage.summary")
+    if "limitations" not in coverage:
+        raise ValidationError("coverage.limitations")
+    limitations = coverage["limitations"]
+    if not isinstance(limitations, list) or not all(isinstance(item, str) for item in limitations):
+        raise ValidationError("coverage.limitations")
+    findings = doc["findings"]
+    if not isinstance(findings, list):
+        raise ValidationError("findings")
+    seen = set()
+    for index, entry in enumerate(findings):
+        _require_exact_keys(entry, INDEX_FINDING_KEYS, f"findings[{index}]")
+        finding_id = entry["id"]
+        if not isinstance(finding_id, str) or not finding_id.strip():
+            raise ValidationError("id")
+        if finding_id in seen:
+            raise ValidationError("duplicate finding id")
+        seen.add(finding_id)
+        original = entry["original_finding_id"]
+        if original is not None and (not isinstance(original, str) or not original.strip()):
+            raise ValidationError("original_finding_id")
+        for key in ("title", "root_cause", "mechanism", "impact"):
+            if not isinstance(entry[key], str) or not entry[key].strip():
+                raise ValidationError(key)
+        locations = entry["locations"]
+        if not isinstance(locations, list) or not locations:
+            raise ValidationError("locations")
+        for loc in locations:
+            if not isinstance(loc, str) or ":" not in loc or not loc.rsplit(":", 1)[-1].isdigit():
+                raise ValidationError("locations")
+        preconditions = entry["preconditions"]
+        if (
+            not isinstance(preconditions, list)
+            or not preconditions
+            or not all(isinstance(item, str) and item.strip() for item in preconditions)
+        ):
+            raise ValidationError("preconditions")
+        privileged = entry["requires_privileged_actor"]
+        if privileged not in (True, False, "unknown"):
+            raise ValidationError("requires_privileged_actor")
+        hint = entry["severity_hint"]
+        if hint is not None and (not isinstance(hint, str) or not hint.strip()):
+            raise ValidationError("severity_hint")
+        evidence = entry["evidence"]
+        if not isinstance(evidence, list) or not evidence:
+            raise ValidationError("evidence")
+        for item in evidence:
+            _require_exact_keys(item, INDEX_EVIDENCE_KEYS, "evidence")
+            if item["artifact_id"] != "primary-report":
+                raise ValidationError("primary-report")
+            if not isinstance(item["locator"], str) or not item["locator"].strip():
+                raise ValidationError("locator")
+    return True
+
+
+def sample_finding(**overrides):
+    entry = {
+        "id": "local-001",
+        "original_finding_id": "H-1",
+        "title": "`Vault::redeem` does not decrease `totalAssets` on the early-exit branch",
+        "root_cause": (
+            "src/Vault.sol:120 the early-return branch transfers assets and "
+            "never decrements totalAssets"
+        ),
+        "mechanism": (
+            "1. Alice deposits 100e18. 2. Alice redeems on the early-exit branch. "
+            "3. Bob withdraws last and is short 100e18."
+        ),
+        "locations": ["src/Vault.sol:120"],
+        "preconditions": ["None"],
+        "impact": "The last withdrawer is short by the amount early redeemers took.",
+        "requires_privileged_actor": False,
+        "severity_hint": "HIGH",
+        "evidence": [{
+            "artifact_id": "primary-report",
+            "locator": "section 'H-1' of the primary report",
+        }],
+    }
+    entry.update(overrides)
+    return entry
+
+
+def sample_findings_index(findings=None):
+    return {
+        "schema": INDEX_SCHEMA,
+        "run_id": "run-20260101-000000-000000-ab12",
+        "step": 1,
+        "coverage": {
+            "summary": (
+                "Accounting-first review of src/Vault.sol across 12 lenses. "
+                "Lenses 1, 6, 9, 11, and 12 read source.md."
+            ),
+            "limitations": ["lens 5 NO_SURFACE: no cross-chain code"],
+        },
+        "findings": findings if findings is not None else [sample_finding()],
+    }
+
+
+def build_return_note(
+    *,
+    done=True,
+    counts,
+    report_path,
+    index_path,
+    log_path,
+    mode,
+    effective,
+    warnings=(),
+    titles=(),
+):
+    """The parent-facing note. Required lines always stay. Titles drop
+    first, then warnings, until the note is within 1600 characters.
+    Finding bodies are not a field here."""
+    status = "done" if done else "incomplete"
+    required = [
+        f"0xsimao-ai {status}",
+        (
+            "counts: critical={critical} high={high} medium={medium} "
+            "low={low} info={info} leads={leads}"
+        ).format(**counts),
+        f"scheduler: {mode} effective={effective}",
+        f"report: {report_path}",
+        f"index: {index_path}",
+        f"log: {log_path}",
+    ]
+    optional = [f"warning: {item}" for item in warnings] + [f"title: {item}" for item in titles]
+    kept = list(optional)
+    while True:
+        note = "\n".join(required + kept)
+        if len(note) <= RETURN_NOTE_LIMIT:
+            return note
+        if not kept:
+            raise ValidationError("return note required lines exceed 1600 characters")
+        kept.pop()
+
+
+def _agent_body(path):
+    text = Path(path).read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        raise ValidationError(f"{path} missing frontmatter")
+    end = text.find("\n---", 3)
+    if end < 0:
+        raise ValidationError(f"{path} unclosed frontmatter")
+    return text[end + 4 :].strip()
+
+
+@check
+def scope_rules_cover_every_lens_once():
+    rules = load_scope_rules()
+    full = [int(n) for n in rules["fullSourceLenses"]]
+    narrow = sorted(int(key) for key in rules["narrowTags"])
+    assert full == [1, 6, 9, 11, 12], full
+    assert narrow == [2, 3, 4, 5, 7, 8, 10], narrow
+    assert set(full).isdisjoint(narrow)
+    assert sorted(set(full) | set(narrow)) == LENS_IDS
+    vocabulary = set(rules["tagVocabulary"])
+    for tags in rules["narrowTags"].values():
+        unknown = set(tags) - vocabulary
+        assert not unknown, unknown
+
+
+@check
+def primary_sets_keep_full_lenses_and_skip_irrelevant_files():
+    vault = {"path": "src/Vault.sol", "tags": ["accounting", "lifecycle", "shares"], "uncertain": False}
+    bridge = {"path": "src/Bridge.sol", "tags": ["cross-chain", "async"], "uncertain": False}
+    mystery = {"path": "src/Mystery.sol", "tags": [], "uncertain": True}
+    files = [vault, bridge, mystery]
+    for lens_id in (1, 6, 9, 11, 12):
+        assert primary_paths(files, lens_id) == [
+            "src/Vault.sol",
+            "src/Bridge.sol",
+            "src/Mystery.sol",
+        ], lens_id
+    # Lens 5 reads the bridge and the uncertain file, not the plain vault.
+    assert primary_paths(files, 5) == ["src/Bridge.sol", "src/Mystery.sol"]
+    # Lens 4 has no liquidation tag here.
+    assert primary_paths(files, 4) == ["src/Mystery.sol"]
+    # Accounting tag pulls the vault into the share lens; the bridge does not.
+    assert primary_paths(files, 2) == ["src/Vault.sol", "src/Mystery.sol"]
+    # A fully read file with no matching tag is not primary for a narrow lens.
+    plain = [{"path": "src/Registry.sol", "tags": ["stateful"], "uncertain": False}]
+    assert primary_paths(plain, 5) == []
+    assert primary_paths(plain, 8) == []
+    assert primary_paths(plain, 1) == ["src/Registry.sol"]
+
+
+def _rejects(doc, needle, **kwargs):
+    try:
+        validate_findings_index(doc, **kwargs)
+    except ValidationError as exc:
+        assert needle in str(exc), (needle, exc)
+        return
+    raise AssertionError(f"expected rejection containing {needle!r}")
+
+
+@check
+def findings_index_matches_orchestrator_contract():
+    run_id = "run-20260101-000000-000000-ab12"
+    validate_findings_index(
+        sample_findings_index(), expected_run_id=run_id, expected_step=1
+    )
+    validate_findings_index(sample_findings_index(findings=[]))
+    # Quoted booleans are not the YAML booleans true/false. unknown is a string.
+    _rejects(
+        sample_findings_index(findings=[sample_finding(requires_privileged_actor="false")]),
+        "requires_privileged_actor",
+    )
+    _rejects(
+        sample_findings_index(findings=[sample_finding(requires_privileged_actor="true")]),
+        "requires_privileged_actor",
+    )
+    omitted = sample_finding()
+    del omitted["requires_privileged_actor"]
+    _rejects(sample_findings_index(findings=[omitted]), "requires_privileged_actor")
+    unknown_ok = sample_finding(id="local-002", requires_privileged_actor="unknown", severity_hint=None)
+    validate_findings_index(sample_findings_index(findings=[sample_finding(), unknown_ok]))
+    _rejects(
+        sample_findings_index(findings=[sample_finding(), sample_finding(id="local-001")]),
+        "duplicate finding id",
+    )
+    missing_cause = sample_finding()
+    del missing_cause["root_cause"]
+    _rejects(sample_findings_index(findings=[missing_cause]), "root_cause")
+    _rejects(
+        sample_findings_index(findings=[sample_finding(evidence=[])]),
+        "evidence",
+    )
+    _rejects(
+        sample_findings_index(findings=[sample_finding(evidence=[{
+            "artifact_id": "findings-native-json",
+            "locator": "x",
+        }])]),
+        "primary-report",
+    )
+    bad_schema = sample_findings_index()
+    bad_schema["schema"] = "whitehexlabs.audit-findings-index/v2"
+    _rejects(bad_schema, "findings-index schema")
+    extra = sample_findings_index()
+    extra["dedup"] = True
+    _rejects(extra, "unknown key")
+    extra_finding_key = sample_finding(kind="finding")
+    _rejects(sample_findings_index(findings=[extra_finding_key]), "unknown key")
+    no_summary = sample_findings_index()
+    no_summary["coverage"] = {"limitations": []}
+    _rejects(no_summary, "coverage.summary")
+    _rejects(sample_findings_index(), "run_id", expected_run_id="run-19990101-000000-000000-dead")
+    _rejects(sample_findings_index(), "step", expected_step=2)
+    template = FINDINGS_TEMPLATE_PATH.read_text(encoding="utf-8")
+    for phrase in (
+        "schema: whitehexlabs.audit-findings-index/v1",
+        "requires_privileged_actor: unknown",
+        "artifact_id: primary-report",
+        "findings-index.yaml",
+    ):
+        assert phrase in template, phrase
+    assert "findings-index.json" not in template
+
+
+@check
+def return_note_stays_within_1600_characters():
+    counts = {"critical": 0, "high": 2, "medium": 1, "low": 0, "info": 3, "leads": 4}
+    note = build_return_note(
+        counts=counts,
+        report_path=".0xsimao-auditor-work/report.md",
+        index_path=".0xsimao-auditor-work/findings-index.yaml",
+        log_path=".0xsimao-auditor-work/run.log",
+        mode="rolling",
+        effective=4,
+        warnings=("repo-local config ignored",),
+        titles=("H-1 redeem leaves totalAssets unchanged", "H-2 index advanced for free"),
+    )
+    assert len(note) <= RETURN_NOTE_LIMIT
+    assert "report: .0xsimao-auditor-work/report.md" in note
+    assert "findings-index.yaml" in note
+    assert "high=2" in note
+    # A flood of titles must not push the paths out.
+    flooded = build_return_note(
+        counts=counts,
+        report_path=".0xsimao-auditor-work/report.md",
+        index_path=".0xsimao-auditor-work/findings-index.yaml",
+        log_path=".0xsimao-auditor-work/run.log",
+        mode="bounded-batch",
+        effective=4,
+        titles=tuple(f"{'H-1 ' * 80}title {n}" for n in range(30)),
+    )
+    assert len(flooded) <= RETURN_NOTE_LIMIT
+    assert "index: .0xsimao-auditor-work/findings-index.yaml" in flooded
+    assert flooded.count("\ntitle:") < 30
+
+
+@check
+def skill_brief_stays_under_budget_and_names_the_index():
+    text = SKILL_PATH.read_text(encoding="utf-8")
+    assert len(text) <= SKILL_CHAR_BUDGET, len(text)
+    for phrase in (
+        "whitehexlabs.audit-findings-index/v1",
+        "1600",
+        "findings-index.yaml",
+        "run.log",
+        "Do not concatenate `source.md` into the bundles.",
+        "NO_SURFACE:",
+    ):
+        assert phrase in text, phrase
+    assert "source.md` + `money-map.md`" not in text
+    assert "findings-index.json" not in text
+    method = (ROOT / "references" / "simao-method.md").read_text(encoding="utf-8")
+    card = (ROOT / "references" / "method-card.md").read_text(encoding="utf-8")
+    assert len(card) < len(method)
+    prompt = (ROOT / "references" / "lens-worker-prompt.md").read_text(encoding="utf-8")
+    assert len(prompt) < 4000, len(prompt)
+
+
+@check
+def zcode_workers_share_one_body():
+    deep = ROOT / "integrations" / "zcode" / "agents" / "0xsimao-deep.md"
+    fast = ROOT / "integrations" / "zcode" / "agents" / "0xsimao-fast.md"
+    assert _agent_body(deep) == _agent_body(fast)
+    body = _agent_body(deep)
+    assert "500 characters" in body
+    assert "Write" in deep.read_text(encoding="utf-8")
+    # The standing prompt must not tell the worker to swallow the whole tree.
+    assert "all in-scope source" not in body
 
 
 def main():
